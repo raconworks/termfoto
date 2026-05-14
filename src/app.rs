@@ -1,0 +1,280 @@
+use crate::scanner::ImageEntry;
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum AppState {
+    Grid,
+    Preview,
+}
+
+pub struct App {
+    pub state: AppState,
+    pub images: Vec<ImageEntry>,
+    pub selected: usize,
+    pub scroll_offset: usize,
+    pub grid_cols: usize,
+}
+
+pub const CELL_WIDTH: usize = 22;
+pub const CELL_HEIGHT: usize = 14;
+
+impl App {
+    pub fn new(images: Vec<ImageEntry>, state: AppState) -> Self {
+        Self {
+            state,
+            images,
+            selected: 0,
+            scroll_offset: 0,
+            grid_cols: 1,
+        }
+    }
+
+    /// 更新 grid_cols 和 scroll_offset。visible_rows 由调用方传入。
+    pub fn update_layout(&mut self, terminal_width: u16, visible_rows: usize) {
+        self.grid_cols = ((terminal_width as usize) / CELL_WIDTH).max(1);
+        self.clamp_scroll(visible_rows.max(1));
+    }
+
+    pub fn navigate_left(&mut self) {
+        if self.selected > 0 {
+            self.selected -= 1;
+        }
+    }
+
+    pub fn navigate_right(&mut self) {
+        if self.selected + 1 < self.images.len() {
+            self.selected += 1;
+        }
+    }
+
+    pub fn navigate_up(&mut self) {
+        self.selected = self.selected.saturating_sub(self.grid_cols);
+    }
+
+    pub fn navigate_down(&mut self) {
+        let next = self.selected + self.grid_cols;
+        if next < self.images.len() {
+            self.selected = next;
+        }
+    }
+
+    pub fn navigate_home(&mut self) {
+        self.selected = 0;
+    }
+
+    pub fn navigate_end(&mut self) {
+        self.selected = self.images.len().saturating_sub(1);
+    }
+
+    pub fn navigate_page_down(&mut self, visible_rows: usize) {
+        let step = visible_rows * self.grid_cols;
+        let next = (self.selected + step).min(self.images.len().saturating_sub(1));
+        self.selected = next;
+    }
+
+    pub fn navigate_page_up(&mut self, visible_rows: usize) {
+        let step = visible_rows * self.grid_cols;
+        self.selected = self.selected.saturating_sub(step);
+    }
+
+    pub fn clamp_scroll(&mut self, visible_rows: usize) {
+        let selected_row = self.selected / self.grid_cols.max(1);
+        if selected_row < self.scroll_offset {
+            self.scroll_offset = selected_row;
+        } else if selected_row >= self.scroll_offset + visible_rows {
+            self.scroll_offset = selected_row + 1 - visible_rows;
+        }
+    }
+
+    pub fn enter_preview(&mut self) {
+        if !self.images.is_empty() {
+            self.state = AppState::Preview;
+        }
+    }
+
+    pub fn exit_preview(&mut self) {
+        self.state = AppState::Grid;
+    }
+
+    pub fn preview_prev(&mut self) {
+        if self.selected > 0 {
+            self.selected -= 1;
+        }
+    }
+
+    pub fn preview_next(&mut self) {
+        if self.selected + 1 < self.images.len() {
+            self.selected += 1;
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::PathBuf;
+
+    fn make_app(count: usize, cols: usize) -> App {
+        let images = (0..count)
+            .map(|i| ImageEntry {
+                path: PathBuf::from(format!("img{:03}.png", i)),
+                filename: format!("img{:03}.png", i),
+                thumbnail: None,
+            })
+            .collect();
+        let mut app = App::new(images, AppState::Grid);
+        app.grid_cols = cols;
+        app
+    }
+
+    #[test]
+    fn test_navigate_right_increments_selected() {
+        let mut app = make_app(5, 3);
+        app.navigate_right();
+        assert_eq!(app.selected, 1);
+    }
+
+    #[test]
+    fn test_navigate_right_clamps_at_last() {
+        let mut app = make_app(3, 3);
+        app.selected = 2;
+        app.navigate_right();
+        assert_eq!(app.selected, 2);
+    }
+
+    #[test]
+    fn test_navigate_left_decrements_selected() {
+        let mut app = make_app(5, 3);
+        app.selected = 2;
+        app.navigate_left();
+        assert_eq!(app.selected, 1);
+    }
+
+    #[test]
+    fn test_navigate_left_clamps_at_zero() {
+        let mut app = make_app(5, 3);
+        app.navigate_left();
+        assert_eq!(app.selected, 0);
+    }
+
+    #[test]
+    fn test_navigate_down_skips_one_row() {
+        let mut app = make_app(9, 3);
+        app.selected = 1;
+        app.navigate_down();
+        assert_eq!(app.selected, 4);
+    }
+
+    #[test]
+    fn test_navigate_down_clamps_at_last_row() {
+        let mut app = make_app(7, 3);
+        app.selected = 4;
+        app.navigate_down();
+        assert_eq!(app.selected, 4);
+    }
+
+    #[test]
+    fn test_navigate_up_skips_one_row() {
+        let mut app = make_app(9, 3);
+        app.selected = 4;
+        app.navigate_up();
+        assert_eq!(app.selected, 1);
+    }
+
+    #[test]
+    fn test_navigate_up_clamps_at_zero() {
+        let mut app = make_app(9, 3);
+        app.selected = 2;
+        app.navigate_up();
+        assert_eq!(app.selected, 0);
+    }
+
+    #[test]
+    fn test_navigate_home() {
+        let mut app = make_app(5, 3);
+        app.selected = 4;
+        app.navigate_home();
+        assert_eq!(app.selected, 0);
+    }
+
+    #[test]
+    fn test_navigate_end() {
+        let mut app = make_app(5, 3);
+        app.navigate_end();
+        assert_eq!(app.selected, 4);
+    }
+
+    #[test]
+    fn test_navigate_page_down() {
+        let mut app = make_app(20, 4);
+        app.selected = 0;
+        app.navigate_page_down(3);
+        assert_eq!(app.selected, 12);
+    }
+
+    #[test]
+    fn test_navigate_page_down_clamps_at_last() {
+        let mut app = make_app(5, 3);
+        app.selected = 0;
+        app.navigate_page_down(10);
+        assert_eq!(app.selected, 4);
+    }
+
+    #[test]
+    fn test_navigate_page_up() {
+        let mut app = make_app(20, 4);
+        app.selected = 12;
+        app.navigate_page_up(3);
+        assert_eq!(app.selected, 0);
+    }
+
+    #[test]
+    fn test_clamp_scroll_scrolls_down_when_selected_below_viewport() {
+        let mut app = make_app(30, 3);
+        app.scroll_offset = 0;
+        app.selected = 9;
+        app.clamp_scroll(3);
+        assert_eq!(app.scroll_offset, 1);
+    }
+
+    #[test]
+    fn test_clamp_scroll_scrolls_up_when_selected_above_viewport() {
+        let mut app = make_app(30, 3);
+        app.scroll_offset = 5;
+        app.selected = 3;
+        app.clamp_scroll(3);
+        assert_eq!(app.scroll_offset, 1);
+    }
+
+    #[test]
+    fn test_enter_preview_changes_state() {
+        let mut app = make_app(3, 3);
+        app.enter_preview();
+        assert_eq!(app.state, AppState::Preview);
+    }
+
+    #[test]
+    fn test_enter_preview_noop_when_empty() {
+        let mut app = make_app(0, 3);
+        app.enter_preview();
+        assert_eq!(app.state, AppState::Grid);
+    }
+
+    #[test]
+    fn test_exit_preview_returns_to_grid() {
+        let mut app = make_app(3, 3);
+        app.state = AppState::Preview;
+        app.exit_preview();
+        assert_eq!(app.state, AppState::Grid);
+    }
+
+    #[test]
+    fn test_preview_prev_and_next() {
+        let mut app = make_app(3, 3);
+        app.state = AppState::Preview;
+        app.selected = 1;
+        app.preview_prev();
+        assert_eq!(app.selected, 0);
+        app.preview_next();
+        assert_eq!(app.selected, 1);
+    }
+}
