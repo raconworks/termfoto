@@ -64,7 +64,14 @@ fn main() -> Result<()> {
         return Err(e.into());
     }
     let backend = CrosstermBackend::new(stdout);
-    let mut terminal = Terminal::new(backend)?;
+    let mut terminal = match Terminal::new(backend) {
+        Ok(t) => t,
+        Err(e) => {
+            let _ = disable_raw_mode();
+            let _ = execute!(io::stdout(), LeaveAlternateScreen);
+            return Err(e.into());
+        }
+    };
 
     let result = run(&mut terminal, images, initial_state);
 
@@ -96,10 +103,15 @@ fn run(
         if app.state == AppState::Preview {
             if last_preview_index != Some(app.selected) {
                 if let Some(entry) = app.images.get(app.selected) {
-                    if let Ok(img) = image::open(&entry.path) {
-                        preview_state = Some(picker.new_resize_protocol(img));
-                        last_preview_index = Some(app.selected);
+                    match image::open(&entry.path) {
+                        Ok(img) => {
+                            preview_state = Some(picker.new_resize_protocol(img));
+                        }
+                        Err(_) => {
+                            preview_state = None;
+                        }
                     }
+                    last_preview_index = Some(app.selected);
                 }
             }
         }
