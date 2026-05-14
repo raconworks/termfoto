@@ -2,16 +2,23 @@ pub mod grid;
 pub mod preview;
 
 use ratatui::Frame;
+use ratatui_image::protocol::StatefulProtocol;
 use crate::app::{App, AppState};
+use crate::ui::grid::GridView;
+use crate::ui::preview::PreviewView;
 
-pub fn draw(frame: &mut Frame, app: &mut App) {
+pub fn draw(
+    frame: &mut Frame,
+    app: &mut App,
+    image_state: Option<&mut Box<dyn StatefulProtocol>>,
+) {
     match app.state {
         AppState::Grid => {
-            let widget = grid::GridView { app };
-            frame.render_widget(widget, frame.area());
+            frame.render_widget(GridView { app }, frame.area());
         }
         AppState::Preview => {
-            // preview widget implemented in Task 5
+            let widget = PreviewView { app, image_state };
+            frame.render_widget(widget, frame.area());
         }
     }
 }
