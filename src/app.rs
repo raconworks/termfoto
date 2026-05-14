@@ -1,4 +1,5 @@
 use crate::scanner::ImageEntry;
+use image;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum AppState {
@@ -104,6 +105,22 @@ impl App {
     pub fn preview_next(&mut self) {
         if self.selected + 1 < self.images.len() {
             self.selected += 1;
+        }
+    }
+
+    /// 生成当前视口范围内尚未加载的缩略图。
+    /// thumb_w / thumb_h: 缩略图像素目标尺寸（由 UI 传入）。
+    pub fn load_visible_thumbnails(&mut self, visible_rows: usize, thumb_w: u32, thumb_h: u32) {
+        let start = self.scroll_offset * self.grid_cols;
+        let end = (start + visible_rows * self.grid_cols).min(self.images.len());
+
+        for entry in &mut self.images[start..end] {
+            if entry.thumbnail.is_none() {
+                if let Ok(img) = image::open(&entry.path) {
+                    let thumb = img.resize(thumb_w, thumb_h, image::imageops::FilterType::Nearest);
+                    entry.thumbnail = Some(thumb);
+                }
+            }
         }
     }
 }
