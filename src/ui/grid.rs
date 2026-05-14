@@ -4,7 +4,7 @@ use ratatui::{
     style::{Color, Style},
     widgets::{Block, Borders, Widget},
 };
-use image::{DynamicImage, GenericImageView};
+use image::DynamicImage;
 use crate::app::{App, CELL_WIDTH, CELL_HEIGHT};
 
 pub struct GridView<'a> {
