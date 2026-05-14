@@ -38,7 +38,7 @@ fn main() -> Result<()> {
             let images = scan_directory(p)?;
             (images, AppState::Grid)
         }
-        Some(ref p) if scanner::is_supported_image(p) => {
+        Some(ref p) if p.is_file() && scanner::is_supported_image(p) => {
             let entry = scanner::ImageEntry {
                 path: p.clone(),
                 filename: p.file_name().unwrap_or_default().to_string_lossy().into_owned(),
@@ -59,14 +59,17 @@ fn main() -> Result<()> {
 
     enable_raw_mode()?;
     let mut stdout = io::stdout();
-    execute!(stdout, EnterAlternateScreen)?;
+    if let Err(e) = execute!(stdout, EnterAlternateScreen) {
+        let _ = disable_raw_mode();
+        return Err(e.into());
+    }
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
 
     let result = run(&mut terminal, images, initial_state);
 
-    disable_raw_mode()?;
-    execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
+    let _ = disable_raw_mode();
+    let _ = execute!(terminal.backend_mut(), LeaveAlternateScreen);
 
     result
 }
