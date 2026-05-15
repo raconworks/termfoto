@@ -13,6 +13,7 @@ pub struct App {
     pub selected: usize,
     pub scroll_offset: usize,
     pub grid_cols: usize,
+    pub zoom_factor: f32,
 }
 
 pub const CELL_WIDTH: usize = 22;
@@ -26,6 +27,7 @@ impl App {
             selected: 0,
             scroll_offset: 0,
             grid_cols: 1,
+            zoom_factor: 1.0,
         }
     }
 
@@ -106,6 +108,20 @@ impl App {
         if self.selected + 1 < self.images.len() {
             self.selected += 1;
         }
+    }
+
+    pub fn zoom_in(&mut self) {
+        self.zoom_factor = ((self.zoom_factor + 0.1) * 10.0).round() / 10.0;
+        self.zoom_factor = self.zoom_factor.min(5.0);
+    }
+
+    pub fn zoom_out(&mut self) {
+        self.zoom_factor = ((self.zoom_factor - 0.1) * 10.0).round() / 10.0;
+        self.zoom_factor = self.zoom_factor.max(0.1);
+    }
+
+    pub fn zoom_reset(&mut self) {
+        self.zoom_factor = 1.0;
     }
 
     /// 生成当前视口范围内尚未加载的缩略图。
@@ -293,5 +309,53 @@ mod tests {
         assert_eq!(app.selected, 0);
         app.preview_next();
         assert_eq!(app.selected, 1);
+    }
+
+    #[test]
+    fn zoom_in_increments_by_0_1() {
+        let mut app = make_app(1, 1);
+        app.zoom_in();
+        assert_eq!(app.zoom_factor, 1.1);
+    }
+
+    #[test]
+    fn zoom_in_capped_at_5() {
+        let mut app = make_app(1, 1);
+        app.zoom_factor = 5.0;
+        app.zoom_in();
+        assert_eq!(app.zoom_factor, 5.0);
+    }
+
+    #[test]
+    fn zoom_out_decrements_by_0_1() {
+        let mut app = make_app(1, 1);
+        app.zoom_out();
+        assert_eq!(app.zoom_factor, 0.9);
+    }
+
+    #[test]
+    fn zoom_out_floored_at_0_1() {
+        let mut app = make_app(1, 1);
+        app.zoom_factor = 0.1;
+        app.zoom_out();
+        assert_eq!(app.zoom_factor, 0.1);
+    }
+
+    #[test]
+    fn zoom_reset_returns_to_1() {
+        let mut app = make_app(1, 1);
+        app.zoom_factor = 3.5;
+        app.zoom_reset();
+        assert_eq!(app.zoom_factor, 1.0);
+    }
+
+    #[test]
+    fn zoom_no_float_drift() {
+        let mut app = make_app(1, 1);
+        app.zoom_factor = 0.1;
+        app.zoom_in(); // 0.2
+        app.zoom_in(); // 0.3
+        app.zoom_in(); // 0.4
+        assert_eq!(app.zoom_factor, 0.4);
     }
 }
