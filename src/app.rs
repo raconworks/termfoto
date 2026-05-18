@@ -133,7 +133,7 @@ impl App {
         for entry in &mut self.images[start..end] {
             if entry.thumbnail.is_none() {
                 if let Ok(img) = image::open(&entry.path) {
-                    let thumb = img.resize(thumb_w, thumb_h, image::imageops::FilterType::Nearest);
+                    let thumb = img.resize(thumb_w, thumb_h, image::imageops::FilterType::Lanczos3);
                     entry.thumbnail = Some(thumb);
                 }
             }
