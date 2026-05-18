@@ -161,8 +161,60 @@ fn handle_key(
             KeyCode::Char('c') if modifiers.contains(KeyModifiers::CONTROL) => return true,
             KeyCode::Left => app.preview_prev(),
             KeyCode::Right => app.preview_next(),
+            KeyCode::Char('+') | KeyCode::Char('=') if modifiers.contains(KeyModifiers::CONTROL) => app.zoom_in(),
+            KeyCode::Char('-') if modifiers.contains(KeyModifiers::CONTROL) => app.zoom_out(),
+            KeyCode::Char('0') if modifiers.contains(KeyModifiers::CONTROL) => app.zoom_reset(),
             _ => {}
         },
     }
     false
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crossterm::event::{KeyCode, KeyModifiers};
+    use crate::scanner::ImageEntry;
+    use std::path::PathBuf;
+
+    fn make_preview_app() -> App {
+        let images = vec![ImageEntry {
+            path: PathBuf::from("test.png"),
+            filename: "test.png".to_string(),
+            thumbnail: None,
+        }];
+        App::new(images, AppState::Preview)
+    }
+
+    #[test]
+    fn ctrl_plus_zooms_in() {
+        let mut app = make_preview_app();
+        let before = app.zoom_factor;
+        handle_key(&mut app, KeyCode::Char('+'), KeyModifiers::CONTROL, 1);
+        assert!(app.zoom_factor > before, "zoom_factor should increase");
+    }
+
+    #[test]
+    fn ctrl_equals_also_zooms_in() {
+        let mut app = make_preview_app();
+        let before = app.zoom_factor;
+        handle_key(&mut app, KeyCode::Char('='), KeyModifiers::CONTROL, 1);
+        assert!(app.zoom_factor > before, "Ctrl+= should also zoom in");
+    }
+
+    #[test]
+    fn ctrl_minus_zooms_out() {
+        let mut app = make_preview_app();
+        let before = app.zoom_factor;
+        handle_key(&mut app, KeyCode::Char('-'), KeyModifiers::CONTROL, 1);
+        assert!(app.zoom_factor < before, "zoom_factor should decrease");
+    }
+
+    #[test]
+    fn ctrl_zero_resets_zoom() {
+        let mut app = make_preview_app();
+        app.zoom_factor = 3.0;
+        handle_key(&mut app, KeyCode::Char('0'), KeyModifiers::CONTROL, 1);
+        assert_eq!(app.zoom_factor, 1.0);
+    }
 }
