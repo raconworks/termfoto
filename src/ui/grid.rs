@@ -103,7 +103,7 @@ pub fn render_thumbnail_to_buf(img: &DynamicImage, area: Rect, buf: &mut Buffer)
     }
     let pixel_w = area.width as u32;
     let pixel_h = (area.height as u32) * 2;
-    let scaled = img.resize_exact(pixel_w, pixel_h, image::imageops::FilterType::Nearest);
+    let scaled = img.resize_exact(pixel_w, pixel_h, image::imageops::FilterType::Lanczos3);
     let rgba = scaled.to_rgba8();
 
     for cy in 0..area.height {
