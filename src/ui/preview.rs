@@ -36,11 +36,17 @@ impl<'a> Widget for PreviewView<'a> {
         }
 
         if let Some(entry) = self.app.images.get(self.app.selected) {
+            let zoom_str = if self.app.zoom_factor == 1.0 {
+                "Fit".to_string()
+            } else {
+                format!("{}%", (self.app.zoom_factor * 100.0).round() as u32)
+            };
             let info = format!(
-                " {} [{}/{}]  ← → 切换  Esc/q 返回",
+                " {} [{}/{}]  ← → 切换  Ctrl+/- 缩放  Ctrl+0 重置  Esc/q 返回  {}",
                 entry.filename,
                 self.app.selected + 1,
-                self.app.images.len()
+                self.app.images.len(),
+                zoom_str
             );
             let span = Span::styled(info, Style::default().fg(Color::White).bg(Color::DarkGray));
             Paragraph::new(span)
@@ -101,5 +107,46 @@ mod tests {
             .map(|x| buf.cell((x, 23)).map(|c| c.symbol().chars().next().unwrap_or(' ')).unwrap_or(' '))
             .collect();
         assert!(last_row.contains("test.png"), "Status bar should contain filename, got: {last_row:?}");
+    }
+
+    #[test]
+    fn test_preview_status_bar_shows_zoom() {
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut app = make_app();
+        app.zoom_factor = 2.0;
+
+        terminal
+            .draw(|f| {
+                let widget = PreviewView { app: &app, image_state: None };
+                f.render_widget(widget, f.area());
+            })
+            .unwrap();
+
+        let buf = terminal.backend().buffer().clone();
+        let last_row: String = (0..80u16)
+            .map(|x| buf.cell((x, 23)).map(|c| c.symbol().chars().next().unwrap_or(' ')).unwrap_or(' '))
+            .collect();
+        assert!(last_row.contains("200%"), "Status bar should show zoom level, got: {last_row:?}");
+    }
+
+    #[test]
+    fn test_preview_status_bar_shows_fit_at_default_zoom() {
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let app = make_app(); // zoom_factor == 1.0
+
+        terminal
+            .draw(|f| {
+                let widget = PreviewView { app: &app, image_state: None };
+                f.render_widget(widget, f.area());
+            })
+            .unwrap();
+
+        let buf = terminal.backend().buffer().clone();
+        let last_row: String = (0..80u16)
+            .map(|x| buf.cell((x, 23)).map(|c| c.symbol().chars().next().unwrap_or(' ')).unwrap_or(' '))
+            .collect();
+        assert!(last_row.contains("Fit"), "Status bar should show 'Fit' at default zoom, got: {last_row:?}");
     }
 }
