@@ -358,4 +358,42 @@ mod tests {
         app.zoom_in(); // 0.4
         assert_eq!(app.zoom_factor, 0.4);
     }
+
+    #[test]
+    fn load_visible_thumbnails_stores_at_expected_size() {
+        use std::io::Write;
+        use tempfile::NamedTempFile;
+
+        // Create a real 200×150 PNG in a temp file
+        let mut tmp = NamedTempFile::with_suffix(".png").unwrap();
+        let img = image::DynamicImage::new_rgb8(200, 150);
+        let mut buf = std::io::Cursor::new(Vec::new());
+        img.write_to(&mut buf, image::ImageFormat::Png).unwrap();
+        tmp.write_all(buf.get_ref()).unwrap();
+        tmp.flush().unwrap();
+
+        let mut app = App::new(
+            vec![crate::scanner::ImageEntry {
+                path: tmp.path().to_path_buf(),
+                filename: "test.png".to_string(),
+                thumbnail: None,
+            }],
+            AppState::Grid,
+        );
+        app.grid_cols = 1;
+
+        // thumb_w and thumb_h as computed in ui/mod.rs after the 4× increase:
+        // thumb_w = (CELL_WIDTH - 2) * 4 = 20 * 4 = 80
+        // thumb_h = (CELL_HEIGHT - 3) * 2 * 4 = 11 * 2 * 4 = 88
+        let thumb_w = (CELL_WIDTH as u32).saturating_sub(2) * 4;
+        let thumb_h = (CELL_HEIGHT as u32).saturating_sub(3) * 2 * 4;
+
+        app.load_visible_thumbnails(1, thumb_w, thumb_h);
+
+        let thumb = app.images[0].thumbnail.as_ref().expect("thumbnail should be loaded");
+        assert!(thumb.width() <= thumb_w, "width should fit within thumb_w");
+        assert!(thumb.height() <= thumb_h, "height should fit within thumb_h");
+        assert!(thumb.width() > 18, "width should be larger than old 18px size");
+        assert!(thumb.height() > 20, "height should be larger than old 20px size");
+    }
 }
