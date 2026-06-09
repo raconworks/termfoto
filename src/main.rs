@@ -30,7 +30,7 @@ use std::time::Duration;
 use anyhow::Result;
 use clap::Parser;
 use crossterm::{
-    event::{self, Event, KeyCode, KeyEventKind, KeyModifiers},
+    event::{self, Event, KeyEventKind},
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
@@ -109,6 +109,8 @@ fn run(
         let cell_w = (size.width / IMAGES_PER_ROW as u16).max(1);
         let cell_h = CELL_HEIGHT as u16;
 
+        app.visible_rows = visible_rows.max(1);
+
         if size.width != last_terminal_width {
             app.clear_protocol_cache();
             last_terminal_width = size.width;
@@ -132,7 +134,7 @@ fn run(
                 if key.kind != KeyEventKind::Press {
                     continue;
                 }
-                let should_quit = handle_key(&mut app, key.code, key.modifiers, visible_rows.max(1));
+                let should_quit = app.handle_key(key.code, key.modifiers);
                 if should_quit {
                     break;
                 }
@@ -143,34 +145,3 @@ fn run(
     Ok(())
 }
 
-fn handle_key(
-    app: &mut App,
-    code: KeyCode,
-    modifiers: KeyModifiers,
-    visible_rows: usize,
-) -> bool {
-    match app.state {
-        AppState::Browser => match code {
-            KeyCode::Char('q') => return true,
-            KeyCode::Char('c') if modifiers.contains(KeyModifiers::CONTROL) => return true,
-            KeyCode::Left => app.navigate_left(),
-            KeyCode::Right => app.navigate_right(),
-            KeyCode::Up => app.navigate_up(),
-            KeyCode::Down => app.navigate_down(),
-            KeyCode::PageDown | KeyCode::Char(' ') => app.navigate_page_down(visible_rows),
-            KeyCode::PageUp => app.navigate_page_up(visible_rows),
-            KeyCode::Home => app.navigate_home(),
-            KeyCode::End => app.navigate_end(),
-            KeyCode::Enter => app.enter_fullscreen(),
-            _ => {}
-        },
-        AppState::Fullscreen => match code {
-            KeyCode::Char('q') | KeyCode::Esc | KeyCode::Enter => app.exit_fullscreen(),
-            KeyCode::Char('c') if modifiers.contains(KeyModifiers::CONTROL) => return true,
-            KeyCode::Left => app.fullscreen_prev(),
-            KeyCode::Right => app.fullscreen_next(),
-            _ => {}
-        },
-    }
-    false
-}

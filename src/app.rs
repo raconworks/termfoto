@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::sync::mpsc::{Receiver, Sender};
 
+use crossterm::event::{KeyCode, KeyModifiers};
 use ratatui::layout::Size;
 use ratatui_image::{
     picker::Picker,
@@ -26,6 +27,7 @@ pub struct App {
     pub fullscreen_protocol: Option<Protocol>,
     pub fullscreen_pending: bool,
     pub cache_width: u16,
+    pub visible_rows: usize,
     load_tx: Sender<usize>,
     load_rx: Receiver<(usize, Protocol)>,
 }
@@ -51,6 +53,7 @@ impl App {
             fullscreen_protocol: None,
             fullscreen_pending: false,
             cache_width: 0,
+            visible_rows: 1,
             load_tx,
             load_rx,
         }
@@ -157,6 +160,36 @@ impl App {
     pub fn clear_protocol_cache(&mut self) {
         self.protocol_cache.clear();
         self.cache_width = 0;
+    }
+
+    /// Handle a key event. Returns true if the app should quit.
+    pub fn handle_key(&mut self, code: KeyCode, modifiers: KeyModifiers) -> bool {
+        match self.state {
+            AppState::Browser => match code {
+                KeyCode::Char('q') => return true,
+                KeyCode::Char('c') if modifiers.contains(KeyModifiers::CONTROL) => return true,
+                KeyCode::Left => self.navigate_left(),
+                KeyCode::Right => self.navigate_right(),
+                KeyCode::Up => self.navigate_up(),
+                KeyCode::Down => self.navigate_down(),
+                KeyCode::PageDown | KeyCode::Char(' ') => {
+                    self.navigate_page_down(self.visible_rows)
+                }
+                KeyCode::PageUp => self.navigate_page_up(self.visible_rows),
+                KeyCode::Home => self.navigate_home(),
+                KeyCode::End => self.navigate_end(),
+                KeyCode::Enter => self.enter_fullscreen(),
+                _ => {}
+            },
+            AppState::Fullscreen => match code {
+                KeyCode::Char('q') | KeyCode::Esc | KeyCode::Enter => self.exit_fullscreen(),
+                KeyCode::Char('c') if modifiers.contains(KeyModifiers::CONTROL) => return true,
+                KeyCode::Left => self.fullscreen_prev(),
+                KeyCode::Right => self.fullscreen_next(),
+                _ => {}
+            },
+        }
+        false
     }
 }
 
