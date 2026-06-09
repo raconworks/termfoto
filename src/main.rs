@@ -2,6 +2,27 @@ mod app;
 mod scanner;
 mod ui;
 
+/// RAII guard that restores terminal state on drop.
+struct TermGuard {
+    _stdout: std::io::Stdout,
+}
+
+impl TermGuard {
+    fn enter() -> anyhow::Result<Self> {
+        enable_raw_mode()?;
+        let mut stdout = io::stdout();
+        execute!(stdout, EnterAlternateScreen)?;
+        Ok(Self { _stdout: stdout })
+    }
+}
+
+impl Drop for TermGuard {
+    fn drop(&mut self) {
+        let _ = disable_raw_mode();
+        let _ = execute!(io::stdout(), LeaveAlternateScreen);
+    }
+}
+
 use std::io;
 use std::path::PathBuf;
 use std::time::Duration;
@@ -60,28 +81,11 @@ fn main() -> Result<()> {
         std::process::exit(0);
     }
 
-    enable_raw_mode()?;
-    let mut stdout = io::stdout();
-    if let Err(e) = execute!(stdout, EnterAlternateScreen) {
-        let _ = disable_raw_mode();
-        return Err(e.into());
-    }
-    let backend = CrosstermBackend::new(stdout);
-    let mut terminal = match Terminal::new(backend) {
-        Ok(t) => t,
-        Err(e) => {
-            let _ = disable_raw_mode();
-            let _ = execute!(io::stdout(), LeaveAlternateScreen);
-            return Err(e.into());
-        }
-    };
+    let _term = TermGuard::enter()?;
+    let backend = CrosstermBackend::new(io::stdout());
+    let mut terminal = Terminal::new(backend)?;
 
-    let result = run(&mut terminal, images, initial_state);
-
-    let _ = disable_raw_mode();
-    let _ = execute!(terminal.backend_mut(), LeaveAlternateScreen);
-
-    result
+    run(&mut terminal, images, initial_state)
 }
 
 fn run(
