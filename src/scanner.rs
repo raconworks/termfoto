@@ -1,10 +1,8 @@
 use std::path::{Path, PathBuf};
-use image::DynamicImage;
 
 pub struct ImageEntry {
     pub path: PathBuf,
     pub filename: String,
-    pub thumbnail: Option<DynamicImage>,
 }
 
 const SUPPORTED_EXTENSIONS: &[&str] = &[
@@ -29,7 +27,7 @@ pub fn scan_directory(dir: &Path) -> anyhow::Result<Vec<ImageEntry>> {
                 .unwrap_or_default()
                 .to_string_lossy()
                 .into_owned();
-            ImageEntry { path, filename, thumbnail: None }
+            ImageEntry { path, filename }
         })
         .collect();
 
@@ -137,13 +135,5 @@ mod tests {
         let dir = tempdir().unwrap();
         let entries = scan_directory(dir.path()).unwrap();
         assert!(entries.is_empty());
-    }
-
-    #[test]
-    fn test_image_entry_has_no_thumbnail_initially() {
-        let dir = tempdir().unwrap();
-        create_fake_png(dir.path(), "img.png");
-        let entries = scan_directory(dir.path()).unwrap();
-        assert!(entries[0].thumbnail.is_none());
     }
 }

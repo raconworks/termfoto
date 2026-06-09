@@ -1,28 +1,26 @@
-pub mod grid;
+pub mod browser;
 pub mod preview;
 
 use ratatui::Frame;
-use ratatui_image::protocol::StatefulProtocol;
+use ratatui_image::protocol::Protocol;
 use crate::app::{App, AppState};
-use crate::ui::grid::GridView;
+use crate::ui::browser::BrowserView;
 use crate::ui::preview::PreviewView;
 
 pub fn draw(
     frame: &mut Frame,
     app: &mut App,
-    image_state: Option<&mut Box<dyn StatefulProtocol>>,
+    cell_w: u16,
+    cell_h: u16,
+    protocol: Option<&Protocol>,
 ) {
     let area = frame.area();
     match app.state {
-        AppState::Grid => {
-            let visible_rows = (area.height / crate::app::CELL_HEIGHT as u16) as usize;
-            let thumb_w = (crate::app::CELL_WIDTH as u32).saturating_sub(2) * 4;
-            let thumb_h = (crate::app::CELL_HEIGHT as u32).saturating_sub(3) * 2 * 4;
-            app.load_visible_thumbnails(visible_rows, thumb_w, thumb_h);
-            frame.render_widget(GridView { app }, area);
+        AppState::Browser => {
+            frame.render_widget(BrowserView { app, cell_w, cell_h }, area);
         }
-        AppState::Preview => {
-            let widget = PreviewView { app, image_state };
+        AppState::Fullscreen => {
+            let widget = PreviewView { app, protocol };
             frame.render_widget(widget, area);
         }
     }

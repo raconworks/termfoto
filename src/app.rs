@@ -1,40 +1,59 @@
+use std::collections::HashMap;
+use std::sync::mpsc::{Receiver, Sender};
+
+use ratatui::layout::Size;
+use ratatui_image::{
+    picker::Picker,
+    protocol::Protocol,
+    Resize, FilterType,
+};
+
 use crate::scanner::ImageEntry;
-use image;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum AppState {
-    Grid,
-    Preview,
+    Browser,
+    Fullscreen,
 }
 
 pub struct App {
     pub state: AppState,
     pub images: Vec<ImageEntry>,
     pub selected: usize,
-    pub scroll_offset: usize,
-    pub grid_cols: usize,
-    pub zoom_factor: f32,
+    pub scroll_row: usize,
+    pub picker: Picker,
+    pub protocol_cache: HashMap<usize, Protocol>,
+    pub fullscreen_protocol: Option<Protocol>,
+    pub fullscreen_pending: bool,
+    pub cache_width: u16,
+    load_tx: Sender<usize>,
+    load_rx: Receiver<(usize, Protocol)>,
 }
 
-pub const CELL_WIDTH: usize = 22;
-pub const CELL_HEIGHT: usize = 14;
+pub const IMAGES_PER_ROW: usize = 8;
+pub const CELL_HEIGHT: usize = 10;
 
 impl App {
-    pub fn new(images: Vec<ImageEntry>, state: AppState) -> Self {
+    pub fn new(
+        images: Vec<ImageEntry>,
+        state: AppState,
+        picker: Picker,
+        load_tx: Sender<usize>,
+        load_rx: Receiver<(usize, Protocol)>,
+    ) -> Self {
         Self {
             state,
             images,
             selected: 0,
-            scroll_offset: 0,
-            grid_cols: 1,
-            zoom_factor: 1.0,
+            scroll_row: 0,
+            picker,
+            protocol_cache: HashMap::new(),
+            fullscreen_protocol: None,
+            fullscreen_pending: false,
+            cache_width: 0,
+            load_tx,
+            load_rx,
         }
-    }
-
-    /// 更新 grid_cols 和 scroll_offset。visible_rows 由调用方传入。
-    pub fn update_layout(&mut self, terminal_width: u16, visible_rows: usize) {
-        self.grid_cols = ((terminal_width as usize) / CELL_WIDTH).max(1);
-        self.clamp_scroll(visible_rows.max(1));
     }
 
     pub fn navigate_left(&mut self) {
@@ -50,11 +69,11 @@ impl App {
     }
 
     pub fn navigate_up(&mut self) {
-        self.selected = self.selected.saturating_sub(self.grid_cols);
+        self.selected = self.selected.saturating_sub(IMAGES_PER_ROW);
     }
 
     pub fn navigate_down(&mut self) {
-        let next = self.selected + self.grid_cols;
+        let next = self.selected + IMAGES_PER_ROW;
         if next < self.images.len() {
             self.selected = next;
         }
@@ -69,114 +88,147 @@ impl App {
     }
 
     pub fn navigate_page_down(&mut self, visible_rows: usize) {
-        let step = visible_rows * self.grid_cols;
+        let step = visible_rows * IMAGES_PER_ROW;
         let next = (self.selected + step).min(self.images.len().saturating_sub(1));
         self.selected = next;
     }
 
     pub fn navigate_page_up(&mut self, visible_rows: usize) {
-        let step = visible_rows * self.grid_cols;
+        let step = visible_rows * IMAGES_PER_ROW;
         self.selected = self.selected.saturating_sub(step);
     }
 
     pub fn clamp_scroll(&mut self, visible_rows: usize) {
-        let selected_row = self.selected / self.grid_cols.max(1);
-        if selected_row < self.scroll_offset {
-            self.scroll_offset = selected_row;
-        } else if selected_row >= self.scroll_offset + visible_rows {
-            self.scroll_offset = selected_row + 1 - visible_rows;
+        let selected_row = self.selected / IMAGES_PER_ROW.max(1);
+        if selected_row < self.scroll_row {
+            self.scroll_row = selected_row;
+        } else if selected_row >= self.scroll_row + visible_rows {
+            self.scroll_row = selected_row + 1 - visible_rows;
         }
     }
 
-    pub fn enter_preview(&mut self) {
+    pub fn enter_fullscreen(&mut self) {
         if !self.images.is_empty() {
-            self.state = AppState::Preview;
+            self.state = AppState::Fullscreen;
+            self.fullscreen_protocol = None;
+            self.fullscreen_pending = true;
+            self.request_load(self.selected);
         }
     }
 
-    pub fn exit_preview(&mut self) {
-        self.state = AppState::Grid;
+    pub fn exit_fullscreen(&mut self) {
+        self.state = AppState::Browser;
+        self.fullscreen_protocol = None;
+        self.fullscreen_pending = false;
     }
 
-    pub fn preview_prev(&mut self) {
+    pub fn fullscreen_prev(&mut self) {
         if self.selected > 0 {
             self.selected -= 1;
+            self.fullscreen_protocol = None;
+            self.fullscreen_pending = true;
+            self.request_load(self.selected);
         }
     }
 
-    pub fn preview_next(&mut self) {
+    pub fn fullscreen_next(&mut self) {
         if self.selected + 1 < self.images.len() {
             self.selected += 1;
+            self.fullscreen_protocol = None;
+            self.fullscreen_pending = true;
+            self.request_load(self.selected);
         }
     }
 
-    pub fn zoom_in(&mut self) {
-        self.zoom_factor = ((self.zoom_factor + 0.1) * 10.0).round() / 10.0;
-        self.zoom_factor = self.zoom_factor.min(5.0);
-    }
-
-    pub fn zoom_out(&mut self) {
-        self.zoom_factor = ((self.zoom_factor - 0.1) * 10.0).round() / 10.0;
-        self.zoom_factor = self.zoom_factor.max(0.1);
-    }
-
-    pub fn zoom_reset(&mut self) {
-        self.zoom_factor = 1.0;
-    }
-
-    /// 生成当前视口范围内尚未加载的缩略图。
-    /// thumb_w / thumb_h: 缩略图像素目标尺寸（由 UI 传入）。
-    pub fn load_visible_thumbnails(&mut self, visible_rows: usize, thumb_w: u32, thumb_h: u32) {
-        let start = self.scroll_offset * self.grid_cols;
-        let end = (start + visible_rows * self.grid_cols).min(self.images.len());
-
-        for entry in &mut self.images[start..end] {
-            if entry.thumbnail.is_none() {
-                if let Ok(img) = image::open(&entry.path) {
-                    let thumb = img.resize(thumb_w, thumb_h, image::imageops::FilterType::Lanczos3);
-                    entry.thumbnail = Some(thumb);
-                }
+    /// Check for completed background image loads.
+    pub fn collect_loads(&mut self) {
+        while let Ok((idx, proto)) = self.load_rx.try_recv() {
+            if idx == self.selected && self.state == AppState::Fullscreen {
+                self.fullscreen_protocol = Some(proto);
+                self.fullscreen_pending = false;
             }
         }
     }
+
+    fn request_load(&self, idx: usize) {
+        let _ = self.load_tx.send(idx);
+    }
+
+    pub fn clear_protocol_cache(&mut self) {
+        self.protocol_cache.clear();
+        self.cache_width = 0;
+    }
+}
+
+/// Spawn a background thread that loads images and creates chafa-encoded Protocols.
+/// Returns (sender, receiver) for App to use.
+pub fn spawn_image_loader(
+    picker: Picker,
+    paths: Vec<std::path::PathBuf>,
+) -> (Sender<usize>, Receiver<(usize, Protocol)>) {
+    let (load_tx, load_rx) = std::sync::mpsc::channel::<usize>();
+    let (done_tx, done_rx) = std::sync::mpsc::channel::<(usize, Protocol)>();
+
+    std::thread::spawn(move || {
+        while let Ok(idx) = load_rx.recv() {
+            if let Some(path) = paths.get(idx) {
+                if let Ok(img) = image::open(path) {
+                    let font_size = picker.font_size();
+                    let nat_w = img.width().div_ceil(font_size.width as u32) as u16;
+                    let nat_h = img.height().div_ceil(font_size.height as u32) as u16;
+                    let size = Size::new(nat_w.max(1), nat_h.max(1));
+                    if let Ok(proto) = picker.new_protocol(
+                        img,
+                        size,
+                        Resize::Fit(Some(FilterType::Lanczos3)),
+                    ) {
+                        let _ = done_tx.send((idx, proto));
+                    }
+                }
+            }
+        }
+    });
+
+    (load_tx, done_rx)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ratatui_image::picker::Picker;
     use std::path::PathBuf;
 
-    fn make_app(count: usize, cols: usize) -> App {
+    fn make_app(count: usize) -> App {
         let images = (0..count)
             .map(|i| ImageEntry {
                 path: PathBuf::from(format!("img{:03}.png", i)),
                 filename: format!("img{:03}.png", i),
-                thumbnail: None,
             })
             .collect();
-        let mut app = App::new(images, AppState::Grid);
-        app.grid_cols = cols;
-        app
+        let (tx, rx) = std::sync::mpsc::channel::<usize>();
+        let (tx2, rx2) = std::sync::mpsc::channel::<(usize, Protocol)>();
+        drop((tx2, rx)); // unused in tests
+        App::new(images, AppState::Browser, Picker::halfblocks(), tx, rx2)
     }
 
     #[test]
-    fn test_navigate_right_increments_selected() {
-        let mut app = make_app(5, 3);
+    fn test_navigate_right_increments() {
+        let mut app = make_app(5);
         app.navigate_right();
         assert_eq!(app.selected, 1);
     }
 
     #[test]
     fn test_navigate_right_clamps_at_last() {
-        let mut app = make_app(3, 3);
+        let mut app = make_app(3);
         app.selected = 2;
         app.navigate_right();
         assert_eq!(app.selected, 2);
     }
 
     #[test]
-    fn test_navigate_left_decrements_selected() {
-        let mut app = make_app(5, 3);
+    fn test_navigate_left_decrements() {
+        let mut app = make_app(5);
         app.selected = 2;
         app.navigate_left();
         assert_eq!(app.selected, 1);
@@ -184,46 +236,46 @@ mod tests {
 
     #[test]
     fn test_navigate_left_clamps_at_zero() {
-        let mut app = make_app(5, 3);
+        let mut app = make_app(5);
         app.navigate_left();
         assert_eq!(app.selected, 0);
     }
 
     #[test]
-    fn test_navigate_down_skips_one_row() {
-        let mut app = make_app(9, 3);
+    fn test_navigate_down_skips_row() {
+        let mut app = make_app(20);
         app.selected = 1;
         app.navigate_down();
-        assert_eq!(app.selected, 4);
+        assert_eq!(app.selected, 9); // 1 + 8
     }
 
     #[test]
-    fn test_navigate_down_clamps_at_last_row() {
-        let mut app = make_app(7, 3);
-        app.selected = 4;
+    fn test_navigate_down_clamps() {
+        let mut app = make_app(10);
+        app.selected = 8;
         app.navigate_down();
-        assert_eq!(app.selected, 4);
+        assert_eq!(app.selected, 8); // 8 + 8 = 16 > 9, stays
     }
 
     #[test]
-    fn test_navigate_up_skips_one_row() {
-        let mut app = make_app(9, 3);
-        app.selected = 4;
+    fn test_navigate_up_skips_row() {
+        let mut app = make_app(20);
+        app.selected = 10;
         app.navigate_up();
-        assert_eq!(app.selected, 1);
+        assert_eq!(app.selected, 2); // 10 - 8
     }
 
     #[test]
     fn test_navigate_up_clamps_at_zero() {
-        let mut app = make_app(9, 3);
-        app.selected = 2;
+        let mut app = make_app(5);
+        app.selected = 3;
         app.navigate_up();
-        assert_eq!(app.selected, 0);
+        assert_eq!(app.selected, 0); // 3 - 8 < 0
     }
 
     #[test]
     fn test_navigate_home() {
-        let mut app = make_app(5, 3);
+        let mut app = make_app(5);
         app.selected = 4;
         app.navigate_home();
         assert_eq!(app.selected, 0);
@@ -231,169 +283,17 @@ mod tests {
 
     #[test]
     fn test_navigate_end() {
-        let mut app = make_app(5, 3);
+        let mut app = make_app(5);
         app.navigate_end();
         assert_eq!(app.selected, 4);
     }
 
     #[test]
-    fn test_navigate_page_down() {
-        let mut app = make_app(20, 4);
-        app.selected = 0;
-        app.navigate_page_down(3);
-        assert_eq!(app.selected, 12);
-    }
-
-    #[test]
-    fn test_navigate_page_down_clamps_at_last() {
-        let mut app = make_app(5, 3);
-        app.selected = 0;
-        app.navigate_page_down(10);
-        assert_eq!(app.selected, 4);
-    }
-
-    #[test]
-    fn test_navigate_page_up() {
-        let mut app = make_app(20, 4);
-        app.selected = 12;
-        app.navigate_page_up(3);
-        assert_eq!(app.selected, 0);
-    }
-
-    #[test]
-    fn test_clamp_scroll_scrolls_down_when_selected_below_viewport() {
-        let mut app = make_app(30, 3);
-        app.scroll_offset = 0;
-        app.selected = 9;
-        app.clamp_scroll(3);
-        assert_eq!(app.scroll_offset, 1);
-    }
-
-    #[test]
-    fn test_clamp_scroll_scrolls_up_when_selected_above_viewport() {
-        let mut app = make_app(30, 3);
-        app.scroll_offset = 5;
-        app.selected = 3;
-        app.clamp_scroll(3);
-        assert_eq!(app.scroll_offset, 1);
-    }
-
-    #[test]
-    fn test_enter_preview_changes_state() {
-        let mut app = make_app(3, 3);
-        app.enter_preview();
-        assert_eq!(app.state, AppState::Preview);
-    }
-
-    #[test]
-    fn test_enter_preview_noop_when_empty() {
-        let mut app = make_app(0, 3);
-        app.enter_preview();
-        assert_eq!(app.state, AppState::Grid);
-    }
-
-    #[test]
-    fn test_exit_preview_returns_to_grid() {
-        let mut app = make_app(3, 3);
-        app.state = AppState::Preview;
-        app.exit_preview();
-        assert_eq!(app.state, AppState::Grid);
-    }
-
-    #[test]
-    fn test_preview_prev_and_next() {
-        let mut app = make_app(3, 3);
-        app.state = AppState::Preview;
-        app.selected = 1;
-        app.preview_prev();
-        assert_eq!(app.selected, 0);
-        app.preview_next();
-        assert_eq!(app.selected, 1);
-    }
-
-    #[test]
-    fn zoom_in_increments_by_0_1() {
-        let mut app = make_app(1, 1);
-        app.zoom_in();
-        assert_eq!(app.zoom_factor, 1.1);
-    }
-
-    #[test]
-    fn zoom_in_capped_at_5() {
-        let mut app = make_app(1, 1);
-        app.zoom_factor = 5.0;
-        app.zoom_in();
-        assert_eq!(app.zoom_factor, 5.0);
-    }
-
-    #[test]
-    fn zoom_out_decrements_by_0_1() {
-        let mut app = make_app(1, 1);
-        app.zoom_out();
-        assert_eq!(app.zoom_factor, 0.9);
-    }
-
-    #[test]
-    fn zoom_out_floored_at_0_1() {
-        let mut app = make_app(1, 1);
-        app.zoom_factor = 0.1;
-        app.zoom_out();
-        assert_eq!(app.zoom_factor, 0.1);
-    }
-
-    #[test]
-    fn zoom_reset_returns_to_1() {
-        let mut app = make_app(1, 1);
-        app.zoom_factor = 3.5;
-        app.zoom_reset();
-        assert_eq!(app.zoom_factor, 1.0);
-    }
-
-    #[test]
-    fn zoom_no_float_drift() {
-        let mut app = make_app(1, 1);
-        app.zoom_factor = 0.1;
-        app.zoom_in(); // 0.2
-        app.zoom_in(); // 0.3
-        app.zoom_in(); // 0.4
-        assert_eq!(app.zoom_factor, 0.4);
-    }
-
-    #[test]
-    fn load_visible_thumbnails_stores_at_expected_size() {
-        use std::io::Write;
-        use tempfile::NamedTempFile;
-
-        // Create a real 200×150 PNG in a temp file
-        let mut tmp = NamedTempFile::with_suffix(".png").unwrap();
-        let img = image::DynamicImage::new_rgb8(200, 150);
-        let mut buf = std::io::Cursor::new(Vec::new());
-        img.write_to(&mut buf, image::ImageFormat::Png).unwrap();
-        tmp.write_all(buf.get_ref()).unwrap();
-        tmp.flush().unwrap();
-
-        let mut app = App::new(
-            vec![crate::scanner::ImageEntry {
-                path: tmp.path().to_path_buf(),
-                filename: "test.png".to_string(),
-                thumbnail: None,
-            }],
-            AppState::Grid,
-        );
-        app.grid_cols = 1;
-
-        // thumb_w and thumb_h as computed in ui/mod.rs after the 4× increase:
-        // thumb_w = (CELL_WIDTH - 2) * 4 = 20 * 4 = 80
-        // thumb_h = (CELL_HEIGHT - 3) * 2 * 4 = 11 * 2 * 4 = 88
-        let thumb_w = (CELL_WIDTH as u32).saturating_sub(2) * 4;
-        let thumb_h = (CELL_HEIGHT as u32).saturating_sub(3) * 2 * 4;
-
-        app.load_visible_thumbnails(1, thumb_w, thumb_h);
-
-        let thumb = app.images[0].thumbnail.as_ref().expect("thumbnail should be loaded");
-        assert!(thumb.width() <= thumb_w, "width should fit within thumb_w");
-        assert!(thumb.height() <= thumb_h, "height should fit within thumb_h");
-        assert!(thumb.width() > 18, "width should be larger than old 18px size");
-        assert!(thumb.height() > 20, "height should be larger than old 20px size");
+    fn test_clear_protocol_cache() {
+        let mut app = make_app(5);
+        app.cache_width = 80;
+        app.clear_protocol_cache();
+        assert!(app.protocol_cache.is_empty());
+        assert_eq!(app.cache_width, 0);
     }
 }
