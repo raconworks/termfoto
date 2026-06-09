@@ -56,6 +56,8 @@ sudo pacman -S chafa
 brew install chafa
 ```
 
+> 💡 **不想装 chafa？** darkroom 可使用终端内置协议（sixel/kitty）或 halfblocks 渲染。无依赖安装：`cargo install darkroom --no-default-features`。预编译二进制已静态链接 chafa，无需任何系统依赖。
+
 ### 方式一：Cargo（推荐，需要 Rust）
 
 ```bash

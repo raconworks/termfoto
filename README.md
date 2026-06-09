@@ -56,6 +56,8 @@ sudo pacman -S chafa
 brew install chafa
 ```
 
+> 💡 **Don't want chafa?** darkroom can use your terminal's built-in protocols (sixel/kitty) or fall back to halfblocks. Install without chafa: `cargo install darkroom --no-default-features`. Prebuilt binaries include chafa statically — no system deps needed.
+
 ### Option 1: Cargo (recommended, requires Rust)
 
 ```bash
