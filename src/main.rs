@@ -116,11 +116,8 @@ fn run(
         // Check for completed background image loads
         app.collect_loads();
 
-        // Render (take protocol out to avoid borrow conflict)
-        let proto = app.fullscreen_protocol.take();
-        let proto_ref = proto.as_ref();
-        terminal.draw(|f| ui::draw(f, &mut app, cell_w, cell_h, proto_ref))?;
-        app.fullscreen_protocol = proto;
+        // Render
+        terminal.draw(|f| ui::draw(f, &mut app, cell_w, cell_h))?;
 
         if event::poll(Duration::from_millis(50))? {
             if let Event::Key(key) = event::read()? {

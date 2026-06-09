@@ -5,12 +5,11 @@ use ratatui::{
     text::Span,
     widgets::{Block, Borders, Paragraph, Widget},
 };
-use ratatui_image::{protocol::Protocol, Image};
+use ratatui_image::Image;
 use crate::app::App;
 
 pub struct PreviewView<'a> {
     pub app: &'a App,
-    pub protocol: Option<&'a Protocol>,
 }
 
 impl<'a> Widget for PreviewView<'a> {
@@ -26,7 +25,7 @@ impl<'a> Widget for PreviewView<'a> {
             ..area
         };
 
-        if let Some(proto) = self.protocol {
+        if let Some(ref proto) = self.app.fullscreen_protocol {
             let proto_size = proto.size();
             // Center the image in the available area
             let offset_x = image_area
