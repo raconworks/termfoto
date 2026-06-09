@@ -34,6 +34,7 @@ pub struct App {
 
 pub const IMAGES_PER_ROW: usize = 8;
 pub const CELL_HEIGHT: usize = 10;
+const MAX_CACHE_SIZE: usize = 200;
 
 impl App {
     pub fn new(
@@ -152,7 +153,24 @@ impl App {
                 self.fullscreen_protocol = Some(proto);
                 self.fullscreen_pending = false;
             } else {
-                self.protocol_cache.insert(idx, proto);
+                self.insert_cache(idx, proto);
+            }
+        }
+    }
+
+    fn insert_cache(&mut self, idx: usize, proto: Protocol) {
+        self.protocol_cache.insert(idx, proto);
+        if self.protocol_cache.len() > MAX_CACHE_SIZE {
+            // Evict the oldest MAX_CACHE_SIZE/2 entries (HashMap preserves insertion order)
+            let remove_count = MAX_CACHE_SIZE / 2;
+            let stale: Vec<usize> = self
+                .protocol_cache
+                .keys()
+                .take(remove_count)
+                .copied()
+                .collect();
+            for k in stale {
+                self.protocol_cache.remove(&k);
             }
         }
     }
