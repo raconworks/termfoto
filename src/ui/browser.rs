@@ -1,8 +1,9 @@
 use ratatui::{
     buffer::Buffer,
-    layout::Rect,
+    layout::{Alignment, Rect},
     style::{Color, Style},
-    widgets::{Block, Borders, Widget},
+    text::Span,
+    widgets::{Block, Borders, Paragraph, Widget},
 };
 use ratatui_image::{protocol::Protocol, Image, Resize, FilterType};
 use crate::app::{App, IMAGES_PER_ROW};
@@ -19,9 +20,20 @@ impl<'a> Widget for BrowserView<'a> {
             return;
         }
 
+        let status_height = 1u16;
+        let grid_area = Rect {
+            height: area.height.saturating_sub(status_height),
+            ..area
+        };
+        let status_area = Rect {
+            y: area.y + grid_area.height,
+            height: status_height,
+            ..area
+        };
+
         let cell_w = self.cell_w.max(1);
         let cell_h = self.cell_h.max(4);
-        let visible_rows = (area.height / cell_h) as usize;
+        let visible_rows = (grid_area.height / cell_h) as usize;
 
         self.app.clamp_scroll(visible_rows);
 
@@ -33,11 +45,11 @@ impl<'a> Widget for BrowserView<'a> {
             let col = (vis_idx % IMAGES_PER_ROW) as u16;
             let row = (vis_idx / IMAGES_PER_ROW) as u16;
 
-            let x = area.x + col * cell_w;
-            let y = area.y + row * cell_h;
+            let x = grid_area.x + col * cell_w;
+            let y = grid_area.y + row * cell_h;
             let cell_area = Rect { x, y, width: cell_w, height: cell_h };
 
-            if x + cell_w > area.x + area.width || y + cell_h > area.y + area.height {
+            if x + cell_w > grid_area.x + grid_area.width || y + cell_h > grid_area.y + grid_area.height {
                 continue;
             }
 
@@ -51,6 +63,24 @@ impl<'a> Widget for BrowserView<'a> {
                 slot,
             );
         }
+
+        // Status bar
+        let selected_name = self
+            .app
+            .images
+            .get(self.app.selected)
+            .map(|e| e.filename.as_str())
+            .unwrap_or("");
+        let info = format!(
+            " {} [{}/{}]  ←→↑↓ 导航  PgUp/PgDown/Space翻页  Home/End首尾  Enter全屏  q退出",
+            selected_name,
+            self.app.selected.saturating_add(1).min(self.app.images.len()),
+            self.app.images.len(),
+        );
+        let span = Span::styled(info, Style::default().fg(Color::White).bg(Color::DarkGray));
+        Paragraph::new(span)
+            .alignment(Alignment::Left)
+            .render(status_area, buf);
     }
 }
 
