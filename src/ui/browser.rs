@@ -5,8 +5,8 @@ use ratatui::{
     text::Span,
     widgets::{Block, Borders, Paragraph, Widget},
 };
-use ratatui_image::{protocol::Protocol, Image, Resize, FilterType};
-use crate::app::{App, IMAGES_PER_ROW};
+use ratatui_image::{protocol::Protocol, Image};
+use crate::app::{App, LoadSize, IMAGES_PER_ROW};
 
 pub struct BrowserView<'a> {
     pub app: &'a mut App,
@@ -170,43 +170,27 @@ fn render_browser_cell(
     buf.set_string(name_x, name_area.y, &truncated, name_style);
 }
 
-/// Create chafa protocols for images in the visible range that aren't cached yet.
+/// Request chafa protocol generation for visible images (async, non-blocking).
 pub fn populate_protocol_cache(
-    app: &mut App,
+    app: &App,
     cell_w: u16,
     cell_h: u16,
-    terminal_width: u16,
     visible_rows: usize,
 ) {
     if cell_w < 2 || cell_h < 2 {
         return;
     }
 
-    // Clear cache if terminal width changed (cell size changed)
-    if app.cache_width != terminal_width {
-        app.clear_protocol_cache();
-        app.cache_width = terminal_width;
-    }
+    let thumb_w = cell_w.saturating_sub(2);
+    let thumb_h = cell_h.saturating_sub(3); // minus border + filename row
 
     let start = app.scroll_row * IMAGES_PER_ROW;
     let end = (start + visible_rows * IMAGES_PER_ROW).min(app.images.len());
-
-    let thumb_w = cell_w.saturating_sub(2);
-    let thumb_h = cell_h.saturating_sub(3); // minus border + filename row
 
     for slot in start..end {
         if app.protocol_cache.contains_key(&slot) {
             continue;
         }
-        if let Ok(img) = image::open(&app.images[slot].path) {
-            let size = ratatui::layout::Size::new(thumb_w, thumb_h);
-            if let Ok(proto) = app.picker.new_protocol(
-                img,
-                size,
-                Resize::Fit(Some(FilterType::Lanczos3)),
-            ) {
-                app.protocol_cache.insert(slot, proto);
-            }
-        }
+        app.request_load(slot, LoadSize::Thumbnail { w: thumb_w, h: thumb_h });
     }
 }

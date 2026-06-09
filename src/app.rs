@@ -28,7 +28,7 @@ pub struct App {
     pub fullscreen_pending: bool,
     pub cache_width: u16,
     pub visible_rows: usize,
-    load_tx: Sender<usize>,
+    load_tx: Sender<LoadRequest>,
     load_rx: Receiver<(usize, Protocol)>,
 }
 
@@ -40,7 +40,7 @@ impl App {
         images: Vec<ImageEntry>,
         state: AppState,
         picker: Picker,
-        load_tx: Sender<usize>,
+        load_tx: Sender<LoadRequest>,
         load_rx: Receiver<(usize, Protocol)>,
     ) -> Self {
         Self {
@@ -115,7 +115,7 @@ impl App {
             self.state = AppState::Fullscreen;
             self.fullscreen_protocol = None;
             self.fullscreen_pending = true;
-            self.request_load(self.selected);
+            self.request_load(self.selected, LoadSize::Original);
         }
     }
 
@@ -130,7 +130,7 @@ impl App {
             self.selected -= 1;
             self.fullscreen_protocol = None;
             self.fullscreen_pending = true;
-            self.request_load(self.selected);
+            self.request_load(self.selected, LoadSize::Original);
         }
     }
 
@@ -139,22 +139,26 @@ impl App {
             self.selected += 1;
             self.fullscreen_protocol = None;
             self.fullscreen_pending = true;
-            self.request_load(self.selected);
+            self.request_load(self.selected, LoadSize::Original);
         }
     }
 
     /// Check for completed background image loads.
+    /// In Browser mode, results go into protocol_cache.
+    /// In Fullscreen mode, result for the selected image becomes fullscreen_protocol.
     pub fn collect_loads(&mut self) {
         while let Ok((idx, proto)) = self.load_rx.try_recv() {
-            if idx == self.selected && self.state == AppState::Fullscreen {
+            if self.state == AppState::Fullscreen && idx == self.selected {
                 self.fullscreen_protocol = Some(proto);
                 self.fullscreen_pending = false;
+            } else {
+                self.protocol_cache.insert(idx, proto);
             }
         }
     }
 
-    fn request_load(&self, idx: usize) {
-        let _ = self.load_tx.send(idx);
+    pub fn request_load(&self, idx: usize, size: LoadSize) {
+        let _ = self.load_tx.send(LoadRequest { idx, size });
     }
 
     pub fn clear_protocol_cache(&mut self) {
@@ -193,29 +197,50 @@ impl App {
     }
 }
 
+/// Size mode for background image loading.
+#[derive(Debug, Clone)]
+pub enum LoadSize {
+    /// Browser thumbnail at fixed cell dimensions.
+    Thumbnail { w: u16, h: u16 },
+    /// Fullscreen: original image size computed from font metrics.
+    Original,
+}
+
+/// A request sent to the background loader.
+#[derive(Debug, Clone)]
+pub struct LoadRequest {
+    pub idx: usize,
+    pub size: LoadSize,
+}
+
 /// Spawn a background thread that loads images and creates chafa-encoded Protocols.
 /// Returns (sender, receiver) for App to use.
 pub fn spawn_image_loader(
     picker: Picker,
     paths: Vec<std::path::PathBuf>,
-) -> (Sender<usize>, Receiver<(usize, Protocol)>) {
-    let (load_tx, load_rx) = std::sync::mpsc::channel::<usize>();
+) -> (Sender<LoadRequest>, Receiver<(usize, Protocol)>) {
+    let (load_tx, load_rx) = std::sync::mpsc::channel::<LoadRequest>();
     let (done_tx, done_rx) = std::sync::mpsc::channel::<(usize, Protocol)>();
 
     std::thread::spawn(move || {
-        while let Ok(idx) = load_rx.recv() {
-            if let Some(path) = paths.get(idx) {
+        while let Ok(req) = load_rx.recv() {
+            if let Some(path) = paths.get(req.idx) {
                 if let Ok(img) = image::open(path) {
-                    let font_size = picker.font_size();
-                    let nat_w = img.width().div_ceil(font_size.width as u32) as u16;
-                    let nat_h = img.height().div_ceil(font_size.height as u32) as u16;
-                    let size = Size::new(nat_w.max(1), nat_h.max(1));
+                    let size = match req.size {
+                        LoadSize::Thumbnail { w, h } => Size::new(w, h),
+                        LoadSize::Original => {
+                            let font_size = picker.font_size();
+                            let nat_w = img.width().div_ceil(font_size.width as u32) as u16;
+                            let nat_h = img.height().div_ceil(font_size.height as u32) as u16;
+                            Size::new(nat_w.max(1), nat_h.max(1))
+                        }
+                    };
                     if let Ok(proto) = picker.new_protocol(
                         img,
                         size,
                         Resize::Fit(Some(FilterType::Lanczos3)),
                     ) {
-                        let _ = done_tx.send((idx, proto));
+                        let _ = done_tx.send((req.idx, proto));
                     }
                 }
             }
@@ -238,9 +263,8 @@ mod tests {
                 filename: format!("img{:03}.png", i),
             })
             .collect();
-        let (tx, rx) = std::sync::mpsc::channel::<usize>();
-        let (tx2, rx2) = std::sync::mpsc::channel::<(usize, Protocol)>();
-        drop((tx2, rx)); // unused in tests
+        let (tx, _rx) = std::sync::mpsc::channel::<LoadRequest>();
+        let (_tx2, rx2) = std::sync::mpsc::channel::<(usize, Protocol)>();
         App::new(images, AppState::Browser, Picker::halfblocks(), tx, rx2)
     }
 

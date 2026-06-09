@@ -117,7 +117,7 @@ fn run(
         }
 
         if app.state == AppState::Browser {
-            populate_protocol_cache(&mut app, cell_w, cell_h, size.width, visible_rows.max(1));
+            populate_protocol_cache(&app, cell_w, cell_h, visible_rows.max(1));
         }
 
         // Check for completed background image loads
