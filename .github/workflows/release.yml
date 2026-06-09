@@ -16,7 +16,9 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
 
       - name: 安装系统依赖
-        run: sudo apt-get install -y libchafa-dev
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y libchafa-dev libglib2.0-dev
 
       - name: 编译 release
         run: cargo build --release --features chafa-static
