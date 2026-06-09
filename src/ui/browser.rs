@@ -170,27 +170,39 @@ fn render_browser_cell(
     buf.set_string(name_x, name_area.y, &truncated, name_style);
 }
 
-/// Request chafa protocol generation for visible images (async, non-blocking).
+/// Request chafa protocol generation for visible images + prefetch adjacent rows.
 pub fn populate_protocol_cache(
-    app: &App,
+    app: &mut App,
     cell_w: u16,
     cell_h: u16,
+    terminal_width: u16,
     visible_rows: usize,
 ) {
     if cell_w < 2 || cell_h < 2 {
         return;
     }
 
+    // Clear cache if terminal width changed (cell size changed, old protocols invalid)
+    if app.cache_width != terminal_width {
+        app.clear_protocol_cache();
+        app.cache_width = terminal_width;
+    }
+
     let thumb_w = cell_w.saturating_sub(2);
     let thumb_h = cell_h.saturating_sub(3); // minus border + filename row
+    let size = LoadSize::Thumbnail { w: thumb_w, h: thumb_h };
 
     let start = app.scroll_row * IMAGES_PER_ROW;
-    let end = (start + visible_rows * IMAGES_PER_ROW).min(app.images.len());
+    let visible_end = (start + visible_rows * IMAGES_PER_ROW).min(app.images.len());
 
-    for slot in start..end {
-        if app.protocol_cache.contains_key(&slot) {
+    // Prefetch: extend range by ±1 row
+    let prefetch_start = start.saturating_sub(IMAGES_PER_ROW);
+    let prefetch_end = (visible_end + IMAGES_PER_ROW).min(app.images.len());
+
+    for slot in prefetch_start..prefetch_end {
+        if app.protocol_cache.contains_key(&slot) || app.requested.contains(&slot) {
             continue;
         }
-        app.request_load(slot, LoadSize::Thumbnail { w: thumb_w, h: thumb_h });
+        app.request_load(slot, size.clone());
     }
 }

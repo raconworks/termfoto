@@ -101,8 +101,6 @@ fn run(
 
     let mut app = App::new(images, initial_state, picker, load_tx, load_rx);
 
-    let mut last_terminal_width: u16 = 0;
-
     loop {
         let size = terminal.size()?;
         let visible_rows = (size.height / CELL_HEIGHT as u16) as usize;
@@ -111,13 +109,8 @@ fn run(
 
         app.visible_rows = visible_rows.max(1);
 
-        if size.width != last_terminal_width {
-            app.clear_protocol_cache();
-            last_terminal_width = size.width;
-        }
-
         if app.state == AppState::Browser {
-            populate_protocol_cache(&app, cell_w, cell_h, visible_rows.max(1));
+            populate_protocol_cache(&mut app, cell_w, cell_h, size.width, visible_rows.max(1));
         }
 
         // Check for completed background image loads

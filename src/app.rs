@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::mpsc::{Receiver, Sender};
 
 use crossterm::event::{KeyCode, KeyModifiers};
@@ -28,6 +28,7 @@ pub struct App {
     pub fullscreen_pending: bool,
     pub cache_width: u16,
     pub visible_rows: usize,
+    pub requested: HashSet<usize>,
     load_tx: Sender<LoadRequest>,
     load_rx: Receiver<(usize, Protocol)>,
 }
@@ -55,6 +56,7 @@ impl App {
             fullscreen_pending: false,
             cache_width: 0,
             visible_rows: 1,
+            requested: HashSet::new(),
             load_tx,
             load_rx,
         }
@@ -149,6 +151,7 @@ impl App {
     /// In Fullscreen mode, result for the selected image becomes fullscreen_protocol.
     pub fn collect_loads(&mut self) {
         while let Ok((idx, proto)) = self.load_rx.try_recv() {
+            self.requested.remove(&idx);
             if self.state == AppState::Fullscreen && idx == self.selected {
                 self.fullscreen_protocol = Some(proto);
                 self.fullscreen_pending = false;
@@ -175,12 +178,17 @@ impl App {
         }
     }
 
-    pub fn request_load(&self, idx: usize, size: LoadSize) {
+    pub fn request_load(&mut self, idx: usize, size: LoadSize) {
+        if self.requested.contains(&idx) {
+            return;
+        }
+        self.requested.insert(idx);
         let _ = self.load_tx.send(LoadRequest { idx, size });
     }
 
     pub fn clear_protocol_cache(&mut self) {
         self.protocol_cache.clear();
+        self.requested.clear();
         self.cache_width = 0;
     }
 
