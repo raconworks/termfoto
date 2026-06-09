@@ -2,6 +2,11 @@
 name = "darkroom"
 version = "0.1.0"
 edition = "2021"
+description = "终端图片浏览器——高效、轻量、chafa 渲染"
+repository = "https://github.com/boyangso/darkroom"
+license = "MIT"
+keywords = ["tui", "image", "viewer", "terminal", "chafa"]
+categories = ["command-line-utilities", "multimedia::images"]
 
 [[bin]]
 name = "darkroom"

@@ -1,0 +1,48 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 安装 Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: 安装系统依赖
+        run: sudo apt-get install -y libchafa-dev
+
+      - name: 编译 release
+        run: cargo build --release
+
+      - name: 打包 .deb
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          PKG="darkroom_${VERSION}_amd64"
+          mkdir -p "${PKG}/DEBIAN"
+          mkdir -p "${PKG}/usr/local/bin"
+          cp target/release/darkroom "${PKG}/usr/local/bin/"
+          cat > "${PKG}/DEBIAN/control" <<EOF
+          Package: darkroom
+          Version: ${VERSION}
+          Architecture: amd64
+          Maintainer: darkroom
+          Depends: libchafa0
+          Description: 终端图片浏览器——高效、轻量、chafa 渲染
+          EOF
+          dpkg-deb --build "${PKG}"
+        env:
+          GITHUB_REF_NAME: ${{ github.ref_name }}
+
+      - name: 发布到 GitHub Releases
+        uses: softprops/action-gh-release@v1
+        with:
+          files: |
+            target/release/darkroom
+            darkroom_*.deb

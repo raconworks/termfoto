@@ -39,25 +39,65 @@
 
 ## 📦 安装
 
+### 系统依赖
+
+所有安装方式都需要系统安装 `libchafa`：
+
 ```bash
-# 系统依赖
+# Debian/Ubuntu
 sudo apt install libchafa-dev
 
-# 从源码编译
-git clone https://github.com/user/darkroom.git
+# Arch
+sudo pacman -S chafa
+
+# macOS
+brew install chafa
+```
+
+### 方式一：Cargo（推荐，需要 Rust）
+
+```bash
+cargo install darkroom
+```
+
+### 方式二：预编译二进制
+
+从 [Releases](https://github.com/boyangso/darkroom/releases) 下载二进制，放到 `PATH` 中：
+
+```bash
+chmod +x darkroom
+sudo cp darkroom /usr/local/bin/
+```
+
+### 方式三：.deb 包（Debian/Ubuntu）
+
+```bash
+curl -LO https://github.com/boyangso/darkroom/releases/latest/download/darkroom_latest_amd64.deb
+sudo apt install ./darkroom_latest_amd64.deb  # 自动安装 libchafa 依赖
+```
+
+### 方式四：从源码编译
+
+```bash
+git clone https://github.com/boyangso/darkroom.git
 cd darkroom
 cargo build --release
-
-# 可选：创建别名
 ln -s $(pwd)/target/release/darkroom ~/.local/bin/dr
+```
+
+### 创建别名
+
+```bash
+# 可选：在 ~/.bashrc 或 ~/.config/fish/config.fish 中添加
+alias dr='darkroom'
 ```
 
 ## 🚀 使用
 
 ```bash
-dr                   # 浏览当前目录
-dr ~/图片             # 浏览指定目录
-dr photo.jpg         # 直接打开单张图片（全屏模式）
+darkroom                 # 浏览当前目录
+darkroom ~/图片           # 浏览指定目录
+darkroom photo.jpg       # 直接打开单张图片（全屏模式）
 ```
 
 ## ⌨ 快捷键
