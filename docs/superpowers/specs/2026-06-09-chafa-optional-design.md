@@ -29,16 +29,26 @@
 [features]
 default = ["chafa"]
 chafa = ["ratatui-image/chafa-dyn"]
+chafa-static = ["ratatui-image/chafa-static"]
 
 [dependencies]
 ratatui-image = { version = "11", features = ["crossterm"] }
-# chafa-dyn 由 feature 控制，不再是硬编码
+# chafa-dyn / chafa-static 由 feature 控制，不再是硬编码
 ```
 
 当前 `ratatui-image` 的 features 硬编码了 `chafa-dyn`：
 ```toml
 # 当前（改前）
 ratatui-image = { version = "11", features = ["crossterm", "chafa-dyn"] }
+```
+
+### .github/workflows/release.yml
+
+Release CI 使用 `chafa-static` 将 `libchafa.a` 编入二进制，用户下载后零运行时依赖：
+
+```yaml
+- name: 编译 release
+  run: cargo build --release --features chafa-static
 ```
 
 ### src/main.rs
@@ -76,22 +86,28 @@ cargo install darkroom --no-default-features
 
 ## 安装行为
 
-| 命令 | 需要 libchafa? | 协议 |
-|------|--------------|------|
-| `cargo install darkroom` | **需要**（默认）| chafa + sixel + kitty + halfblocks |
-| `cargo install darkroom --no-default-features` | **不需要** | sixel + kitty + halfblocks |
+| 安装方式 | 编译时需要 | 运行时需要 | 协议 |
+|---------|----------|----------|------|
+| `cargo install darkroom` | `libchafa-dev` | `libchafa.so` | chafa + sixel + kitty + halfblocks |
+| `cargo install darkroom --no-default-features` | 无 | 无 | sixel + kitty + halfblocks |
+| GitHub Release 二进制 | 无（static 链接）| 无 | chafa（static）+ sixel + kitty + halfblocks |
 
 ## 验证
 
 ```bash
-# 默认构建（含 chafa）
+# 默认构建（含 chafa-dyn）
 cargo build
 cargo run -- <测试目录>
 
 # 无 chafa 构建
 cargo build --no-default-features
 cargo run -- <测试目录>
+
+# static 链接构建（模拟 release）
+cargo build --release --features chafa-static
+cargo run --release -- <测试目录>
 ```
 
 - 默认构建行为不变
 - 无 chafa 构建：在支持 sixel/kitty 的终端中高质量显示，在普通终端中用 halfblocks 显示
+- static 构建：chafa 高质量渲染 + 二进制无 libchafa.so 依赖
