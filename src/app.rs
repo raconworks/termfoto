@@ -22,7 +22,6 @@ pub struct App {
     pub images: Vec<ImageEntry>,
     pub selected: usize,
     pub scroll_row: usize,
-    pub picker: Picker,
     pub protocol_cache: HashMap<usize, Protocol>,
     pub fullscreen_protocol: Option<Protocol>,
     pub fullscreen_pending: bool,
@@ -41,7 +40,6 @@ impl App {
     pub fn new(
         images: Vec<ImageEntry>,
         state: AppState,
-        picker: Picker,
         load_tx: Sender<LoadRequest>,
         load_rx: Receiver<(usize, Protocol)>,
     ) -> Self {
@@ -50,7 +48,6 @@ impl App {
             images,
             selected: 0,
             scroll_row: 0,
-            picker,
             protocol_cache: HashMap::new(),
             fullscreen_protocol: None,
             fullscreen_pending: false,
@@ -279,7 +276,6 @@ pub fn spawn_image_loader(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ratatui_image::picker::Picker;
     use std::path::PathBuf;
 
     fn make_app(count: usize) -> App {
@@ -291,7 +287,7 @@ mod tests {
             .collect();
         let (tx, _rx) = std::sync::mpsc::channel::<LoadRequest>();
         let (_tx2, rx2) = std::sync::mpsc::channel::<(usize, Protocol)>();
-        App::new(images, AppState::Browser, Picker::halfblocks(), tx, rx2)
+        App::new(images, AppState::Browser, tx, rx2)
     }
 
     #[test]

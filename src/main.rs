@@ -99,7 +99,7 @@ fn run(
     let paths: Vec<PathBuf> = images.iter().map(|e| e.path.clone()).collect();
     let (load_tx, load_rx) = spawn_image_loader(picker.clone(), paths);
 
-    let mut app = App::new(images, initial_state, picker, load_tx, load_rx);
+    let mut app = App::new(images, initial_state, load_tx, load_rx);
 
     loop {
         let size = terminal.size()?;
