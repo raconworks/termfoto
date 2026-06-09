@@ -1,6 +1,8 @@
+[中文版](README.zh.md)
+
 # darkroom
 
-> 终端里的暗房——用 chafa 冲洗每一张照片。
+> A darkroom for your terminal — develop every photo with chafa.
 
 [![build](https://img.shields.io/badge/build-passing-brightgreen)](https://github.com)
 [![version](https://img.shields.io/badge/version-0.1.0-blue)](Cargo.toml)
@@ -11,37 +13,37 @@
   ╭─────────────────────────────────────────────────╮
   │  🖼  img_0001.png  🖼  img_0002.png  ...        │
   │                                                 │
-  │  8 列 chafa 缩略图 · vim 式导航                  │
-  │  回车全屏 · 原图尺寸 · 零阻塞                    │
+  │  8-column chafa thumbnails · vim-style nav      │
+  │  Enter fullscreen · original size · zero-block  │
   │                                                 │
-  │  photo_0042.png [42/156]  ←→↑↓ 导航  ...        │
+  │  photo_0042.png [42/156]  ←→↑↓ navigate  ...   │
   ╰─────────────────────────────────────────────────╯
 ```
 
-## ✨ 特性
+## ✨ Features
 
 | | |
 |---|---|
-| 🎨 **chafa 高质量渲染** | Unicode 字符 + true color 半块，比 sixel 清晰一个量级 |
-| ⚡ **零阻塞异步加载** | 图片解码和 chafa 编码全在后台线程，滚动丝滑不卡 UI |
-| 🖼 **原图尺寸全屏** | 不缩放、不失真，像素级精确居中显示 |
-| ⌨ **纯键盘操作** | Vim 式导航，手不离键盘，操作即响应 |
-| 🪶 **极致轻量** | 无 GUI 框架，核心依赖仅 4 个 crate |
-| 📂 **即时启动** | 不建索引、不扫子目录、不缓存元数据，打开即浏览 |
+| 🎨 **High-quality chafa rendering** | Unicode chars + true color half-blocks — a magnitude sharper than sixel |
+| ⚡ **Non-blocking async loading** | Image decoding & chafa encoding run on background thread — zero UI jank |
+| 🖼 **Original-size fullscreen** | No scaling, no distortion — pixel-accurate, centered display |
+| ⌨ **Keyboard-only navigation** | Vim-style bindings — keep your hands where they matter |
+| 🪶 **Extremely lightweight** | No GUI framework — only 4 core dependencies |
+| 📂 **Instant startup** | No indexing, no recursive scanning, no metadata cache — open and browse |
 
-## 🎯 设计哲学
+## 🎯 Design Philosophy
 
-**效率优先，功能其次。** darkroom 不做幻灯片、不做批量导出、不做滤镜调整。它只做一件事——用最快的方式让你在终端里看清图片。
+**Efficiency first, features second.** darkroom is not a slideshow, a batch exporter, or a photo editor. It does one thing — lets you see your images in the terminal, as fast as possible.
 
-- **主线程永不阻塞** — 所有 I/O 和编码都在后台线程执行
-- **终端原生体验** — 就像 `ls` 或 `vim`，启动瞬间，操作即时
-- **功能克制** — 每考虑一个新功能，先问"它会让浏览变慢吗？"
+- **Main thread never blocks** — all I/O and encoding run on background threads
+- **Terminal-native experience** — like `ls` or `vim`: launches instantly, responds immediately
+- **Ruthlessly minimal** — before adding a feature, ask: "will it make browsing slower?"
 
-## 📦 安装
+## 📦 Installation
 
-### 系统依赖
+### System dependency
 
-所有安装方式都需要系统安装 `libchafa`：
+All methods require `libchafa`:
 
 ```bash
 # Debian/Ubuntu
@@ -54,29 +56,29 @@ sudo pacman -S chafa
 brew install chafa
 ```
 
-### 方式一：Cargo（推荐，需要 Rust）
+### Option 1: Cargo (recommended, requires Rust)
 
 ```bash
 cargo install darkroom
 ```
 
-### 方式二：预编译二进制
+### Option 2: Prebuilt binary
 
-从 [Releases](https://github.com/boyangso/darkroom/releases) 下载二进制，放到 `PATH` 中：
+Download from [Releases](https://github.com/boyangso/darkroom/releases), drop into `PATH`:
 
 ```bash
 chmod +x darkroom
 sudo cp darkroom /usr/local/bin/
 ```
 
-### 方式三：.deb 包（Debian/Ubuntu）
+### Option 3: .deb package (Debian/Ubuntu)
 
 ```bash
 curl -LO https://github.com/boyangso/darkroom/releases/latest/download/darkroom_latest_amd64.deb
-sudo apt install ./darkroom_latest_amd64.deb  # 自动安装 libchafa 依赖
+sudo apt install ./darkroom_latest_amd64.deb  # auto-resolves libchafa dependency
 ```
 
-### 方式四：从源码编译
+### Option 4: Build from source
 
 ```bash
 git clone https://github.com/boyangso/darkroom.git
@@ -85,43 +87,43 @@ cargo build --release
 ln -s $(pwd)/target/release/darkroom ~/.local/bin/dr
 ```
 
-### 创建别名
+### Optional alias
 
 ```bash
-# 可选：在 ~/.bashrc 或 ~/.config/fish/config.fish 中添加
+# Add to ~/.bashrc or ~/.config/fish/config.fish
 alias dr='darkroom'
 ```
 
-## 🚀 使用
+## 🚀 Usage
 
 ```bash
-darkroom                 # 浏览当前目录
-darkroom ~/图片           # 浏览指定目录
-darkroom photo.jpg       # 直接打开单张图片（全屏模式）
+darkroom                 # browse current directory
+darkroom ~/Pictures      # browse a directory
+darkroom photo.jpg       # open a single image (fullscreen mode)
 ```
 
-## ⌨ 快捷键
+## ⌨ Keybindings
 
-| 模式 | 按键 | 功能 |
-|------|------|------|
-| 浏览器 | `←` `→` `↑` `↓` | 导航 |
-| 浏览器 | `Space` `PgUp` `PgDn` | 翻页 |
-| 浏览器 | `Home` `End` | 跳到首/尾 |
-| 浏览器 | `Enter` | 全屏查看 |
-| 浏览器 | `q` `Ctrl+C` | 退出 |
-| 全屏 | `←` `→` | 切换图片 |
-| 全屏 | `Enter` `Esc` `q` | 返回浏览器 |
-| 全屏 | `Ctrl+C` | 退出 |
+| Mode | Key | Action |
+|------|-----|--------|
+| Browser | `←` `→` `↑` `↓` | Navigate |
+| Browser | `Space` `PgUp` `PgDn` | Page up/down |
+| Browser | `Home` `End` | Jump to first/last |
+| Browser | `Enter` | View fullscreen |
+| Browser | `q` `Ctrl+C` | Quit |
+| Fullscreen | `←` `→` | Previous/next image |
+| Fullscreen | `Enter` `Esc` `q` | Back to browser |
+| Fullscreen | `Ctrl+C` | Quit |
 
-## 🔧 技术栈
+## 🔧 Tech Stack
 
-| 依赖 | 用途 |
-|------|------|
-| [ratatui](https://ratatui.rs) | TUI 框架 |
-| [ratatui-image](https://github.com/ratatui/ratatui-image) + [chafa](https://hpjansson.org/chafa/) | 图片 → Unicode 字符渲染 |
-| [image](https://github.com/image-rs/image) | 图片解码（PNG/JPEG/WebP/GIF/BMP/TIFF/ICO） |
-| [clap](https://github.com/clap-rs/clap) | CLI 参数解析 |
+| Dependency | Purpose |
+|------------|---------|
+| [ratatui](https://ratatui.rs) | TUI framework |
+| [ratatui-image](https://github.com/ratatui/ratatui-image) + [chafa](https://hpjansson.org/chafa/) | Image → Unicode character rendering |
+| [image](https://github.com/image-rs/image) | Image decoding (PNG/JPEG/WebP/GIF/BMP/TIFF/ICO) |
+| [clap](https://github.com/clap-rs/clap) | CLI argument parsing |
 
-## 📜 许可证
+## 📜 License
 
 MIT
