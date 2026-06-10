@@ -164,9 +164,9 @@ impl App {
                 self.fullscreen_protocol = Some(proto);
                 self.fullscreen_pending = false;
             } else {
-                // Discard protocols from stale requests (terminal was resized after request)
+                // Discard protocols that exceed current cell (stale from terminal resize)
                 let psize = proto.size();
-                if self.thumb_w > 0 && (psize.width != self.thumb_w || psize.height != self.thumb_h) {
+                if self.thumb_w > 0 && (psize.width > self.thumb_w || psize.height > self.thumb_h) {
                     continue;
                 }
                 self.insert_cache(idx, proto);
