@@ -21,9 +21,15 @@ path = "src/main.rs"
 ratatui = { version = "0.30", default-features = false, features = ["crossterm"] }
 crossterm = "0.29"
 ratatui-image = { version = "11", default-features = false, features = ["crossterm"] }
-image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp", "gif", "bmp", "tiff", "ico"] }
-clap = { version = "4", features = ["derive"] }
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp"] }
 anyhow = "1"
+
+[profile.release]
+lto = "fat"
+codegen-units = 1
+opt-level = "z"
+strip = true
+panic = "abort"
 
 [dev-dependencies]
 tempfile = "3"

@@ -29,7 +29,6 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use anyhow::Result;
-use clap::Parser;
 use crossterm::{
     event::{self, Event, KeyEventKind},
     execute,
@@ -43,17 +42,10 @@ use lang::Lang;
 use scanner::scan_directory;
 use ui::browser::populate_protocol_cache;
 
-#[derive(Parser)]
-#[command(name = "darkroom", about = "Terminal image viewer", version)]
-struct Args {
-    /// Directory or image file to open (default: current directory)
-    path: Option<PathBuf>,
-}
-
 fn main() -> Result<()> {
-    let args = Args::parse();
+    let path = std::env::args().nth(1).map(PathBuf::from);
 
-    let (images, initial_state) = match args.path {
+    let (images, initial_state) = match path {
         None => {
             let images = scan_directory(&std::env::current_dir()?)?;
             (images, AppState::Browser)
