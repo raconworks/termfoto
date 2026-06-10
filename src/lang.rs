@@ -88,6 +88,23 @@ impl Lang {
             Lang::En => " ⏳ loading...",
         }
     }
+
+    // ---- Info panel labels ----
+    pub fn label_file(&self) -> &'static str {
+        match self { Lang::Zh => "文件", Lang::En => "File" }
+    }
+    pub fn label_dims(&self) -> &'static str {
+        match self { Lang::Zh => "像素", Lang::En => "Dimensions" }
+    }
+    pub fn label_size(&self) -> &'static str {
+        match self { Lang::Zh => "大小", Lang::En => "Size" }
+    }
+    pub fn label_type(&self) -> &'static str {
+        match self { Lang::Zh => "格式", Lang::En => "Type" }
+    }
+    pub fn label_path(&self) -> &'static str {
+        match self { Lang::Zh => "路径", Lang::En => "Path" }
+    }
 }
 
 #[cfg(test)]
@@ -125,6 +142,11 @@ mod tests {
             assert!(!lang.search_hint_none().is_empty());
             assert!(!lang.preview_status("test.png", 1, 10, "").is_empty());
             assert!(!lang.loading_text().is_empty());
+            assert!(!lang.label_file().is_empty());
+            assert!(!lang.label_dims().is_empty());
+            assert!(!lang.label_size().is_empty());
+            assert!(!lang.label_type().is_empty());
+            assert!(!lang.label_path().is_empty());
         }
     }
 
@@ -136,5 +158,10 @@ mod tests {
         assert_ne!(Lang::Zh.search_hint_none(), Lang::En.search_hint_none());
         assert_ne!(Lang::Zh.preview_status("a", 1, 5, ""), Lang::En.preview_status("a", 1, 5, ""));
         assert_ne!(Lang::Zh.loading_text(), Lang::En.loading_text());
+        assert_ne!(Lang::Zh.label_file(), Lang::En.label_file());
+        assert_ne!(Lang::Zh.label_dims(), Lang::En.label_dims());
+        assert_ne!(Lang::Zh.label_size(), Lang::En.label_size());
+        assert_ne!(Lang::Zh.label_type(), Lang::En.label_type());
+        assert_ne!(Lang::Zh.label_path(), Lang::En.label_path());
     }
 }

@@ -55,9 +55,11 @@ fn main() -> Result<()> {
             (images, AppState::Browser)
         }
         Some(ref p) if p.is_file() && scanner::is_supported_image(p) => {
+            let file_size = std::fs::metadata(p).map(|m| m.len()).unwrap_or(0);
             let entry = scanner::ImageEntry {
                 path: p.clone(),
                 filename: p.file_name().unwrap_or_default().to_string_lossy().into_owned(),
+                file_size,
             };
             (vec![entry], AppState::Fullscreen)
         }

@@ -3,6 +3,7 @@ use std::path::{Path, PathBuf};
 pub struct ImageEntry {
     pub path: PathBuf,
     pub filename: String,
+    pub file_size: u64,
 }
 
 const SUPPORTED_EXTENSIONS: &[&str] = &[
@@ -27,7 +28,8 @@ pub fn scan_directory(dir: &Path) -> anyhow::Result<Vec<ImageEntry>> {
                 .unwrap_or_default()
                 .to_string_lossy()
                 .into_owned();
-            ImageEntry { path, filename }
+            let file_size = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
+            ImageEntry { path, filename, file_size }
         })
         .collect();
 

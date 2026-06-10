@@ -27,6 +27,7 @@ pub struct App {
     pub protocol_cache: HashMap<usize, Protocol>,
     pub fullscreen_protocol: Option<Protocol>,
     pub fullscreen_pending: bool,
+    pub fullscreen_dims: Option<(u32, u32)>,
     pub cache_width: u16,
     pub cache_height: u16,
     pub grid_cols: usize,
@@ -37,7 +38,7 @@ pub struct App {
     pub search: Option<SearchState>,
     pub lang: Lang,
     load_tx: Sender<LoadRequest>,
-    load_rx: Receiver<(usize, Protocol)>,
+    load_rx: Receiver<(usize, Protocol, Option<(u32, u32)>)>,
 }
 
 pub const MIN_CELL: u16 = 24;
@@ -50,7 +51,7 @@ impl App {
         images: Vec<ImageEntry>,
         state: AppState,
         load_tx: Sender<LoadRequest>,
-        load_rx: Receiver<(usize, Protocol)>,
+        load_rx: Receiver<(usize, Protocol, Option<(u32, u32)>)>,
         lang: Lang,
     ) -> Self {
         Self {
@@ -61,6 +62,7 @@ impl App {
             protocol_cache: HashMap::new(),
             fullscreen_protocol: None,
             fullscreen_pending: false,
+            fullscreen_dims: None,
             cache_width: 0,
             cache_height: 0,
             grid_cols: 8,
@@ -163,11 +165,12 @@ impl App {
     /// In Browser mode, results go into protocol_cache.
     /// In Fullscreen mode, result for the selected image becomes fullscreen_protocol.
     pub fn collect_loads(&mut self) {
-        while let Ok((idx, proto)) = self.load_rx.try_recv() {
+        while let Ok((idx, proto, dims)) = self.load_rx.try_recv() {
             self.requested.remove(&idx);
             if self.state == AppState::Fullscreen && idx == self.selected {
                 self.fullscreen_protocol = Some(proto);
                 self.fullscreen_pending = false;
+                self.fullscreen_dims = dims;
             } else {
                 // Discard protocols that exceed current cell (stale from terminal resize)
                 let psize = proto.size();
@@ -308,9 +311,9 @@ pub struct LoadRequest {
 pub fn spawn_image_loader(
     picker: Picker,
     paths: Vec<std::path::PathBuf>,
-) -> (Sender<LoadRequest>, Receiver<(usize, Protocol)>) {
+) -> (Sender<LoadRequest>, Receiver<(usize, Protocol, Option<(u32, u32)>)>) {
     let (load_tx, load_rx) = std::sync::mpsc::channel::<LoadRequest>();
-    let (done_tx, done_rx) = std::sync::mpsc::channel::<(usize, Protocol)>();
+    let (done_tx, done_rx) = std::sync::mpsc::channel::<(usize, Protocol, Option<(u32, u32)>)>();
     let paths = std::sync::Arc::new(paths);
     let rx = std::sync::Arc::new(std::sync::Mutex::new(load_rx));
 
@@ -334,6 +337,7 @@ pub fn spawn_image_loader(
             if let Some(path) = paths.get(req.idx) {
                 if let Ok(img) = image::open(path) {
                     let font_size = picker.font_size();
+                    let dims = (img.width(), img.height());
                     let (img, size, filter) = match req.size {
                         LoadSize::Thumbnail { w, h } => {
                             let pixel_w = w as u32 * font_size.width as u32 * 2;
@@ -354,7 +358,7 @@ pub fn spawn_image_loader(
                         size,
                         Resize::Fit(Some(filter)),
                     ) {
-                        let _ = done_tx.send((req.idx, proto));
+                        let _ = done_tx.send((req.idx, proto, Some(dims)));
                     }
                 }
             }
@@ -374,10 +378,11 @@ mod tests {
             .map(|i| ImageEntry {
                 path: PathBuf::from(format!("img{:03}.png", i)),
                 filename: format!("img{:03}.png", i),
+                file_size: 0,
             })
             .collect();
         let (tx, _rx) = std::sync::mpsc::channel::<LoadRequest>();
-        let (_tx2, rx2) = std::sync::mpsc::channel::<(usize, Protocol)>();
+        let (_tx2, rx2) = std::sync::mpsc::channel::<(usize, Protocol, Option<(u32, u32)>)>();
         App::new(images, AppState::Browser, tx, rx2, Lang::Zh)
     }
 
@@ -475,10 +480,11 @@ mod tests {
             .map(|name| ImageEntry {
                 path: PathBuf::from(name),
                 filename: name.to_string(),
+                file_size: 0,
             })
             .collect();
         let (tx, _rx) = std::sync::mpsc::channel::<LoadRequest>();
-        let (_tx2, rx2) = std::sync::mpsc::channel::<(usize, Protocol)>();
+        let (_tx2, rx2) = std::sync::mpsc::channel::<(usize, Protocol, Option<(u32, u32)>)>();
         App::new(images, AppState::Browser, tx, rx2, Lang::Zh)
     }
 

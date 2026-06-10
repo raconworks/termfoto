@@ -2,10 +2,46 @@ pub mod browser;
 pub mod preview;
 pub mod search;
 
-use ratatui::Frame;
-use crate::app::{App, AppState};
+use ratatui::{
+    buffer::Buffer,
+    layout::Rect,
+    style::{Color, Style},
+    text::Span,
+    Frame,
+};
+use crate::app::{App, AppState, LOGO_HEIGHT};
 use crate::ui::browser::BrowserView;
 use crate::ui::preview::PreviewView;
+
+const LOGO_LINES: [&str; LOGO_HEIGHT as usize] = [
+    "████████╗███████╗██████╗ ███╗   ███╗███████╗ ██████╗ ████████╗ ██████╗",
+    "╚══██╔══╝██╔════╝██╔══██╗████╗ ████║██╔════╝██╔═══██╗╚══██╔══╝██╔═══██╗",
+    "   ██║   █████╗  ██████╔╝██╔████╔██║█████╗  ██║   ██║   ██║   ██║   ██║",
+    "   ██║   ██╔══╝  ██╔══██╗██║╚██╔╝██║██╔══╝  ██║   ██║   ██║   ██║   ██║",
+    "   ██║   ███████╗██║  ██║██║ ╚═╝ ██║██║     ╚██████╔╝   ██║   ╚██████╔╝",
+    "   ╚═╝   ╚══════╝╚═╝  ╚═╝╚═╝     ╚═╝╚═╝      ╚═════╝    ╚═╝    ╚═════╝",
+];
+
+const LOGO_COLORS: [Color; LOGO_HEIGHT as usize] = [
+    Color::Rgb(255, 0, 0),
+    Color::Rgb(255, 127, 0),
+    Color::Rgb(255, 255, 0),
+    Color::Rgb(0, 255, 0),
+    Color::Rgb(0, 127, 255),
+    Color::Rgb(127, 0, 255),
+];
+
+pub fn render_logo(area: Rect, buf: &mut Buffer) {
+    let max_w = LOGO_LINES.iter().map(|l| l.chars().count()).max().unwrap_or(0);
+    let logo_w = max_w.min(area.width as usize);
+    let offset_x = area.x + area.width.saturating_sub(logo_w as u16);
+
+    for (i, line) in LOGO_LINES.iter().enumerate() {
+        let trimmed: String = line.chars().take(logo_w).collect();
+        let style = Style::default().fg(LOGO_COLORS[i]);
+        buf.set_span(offset_x, area.y + i as u16, &Span::styled(trimmed, style), logo_w as u16);
+    }
+}
 
 pub fn draw(
     frame: &mut Frame,

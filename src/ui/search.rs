@@ -207,6 +207,7 @@ mod tests {
             .map(|name| ImageEntry {
                 path: PathBuf::from(name),
                 filename: name.to_string(),
+                file_size: 0,
             })
             .collect()
     }

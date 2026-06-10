@@ -8,36 +8,7 @@ use ratatui::{
 use ratatui_image::{protocol::Protocol, Image};
 use crate::app::{App, LoadSize, LOGO_HEIGHT, MIN_LOGO_WIDTH};
 use crate::ui::search::SearchBar;
-
-const LOGO_LINES: [&str; LOGO_HEIGHT as usize] = [
-    "████████╗███████╗██████╗ ███╗   ███╗███████╗ ██████╗ ████████╗ ██████╗",
-    "╚══██╔══╝██╔════╝██╔══██╗████╗ ████║██╔════╝██╔═══██╗╚══██╔══╝██╔═══██╗",
-    "   ██║   █████╗  ██████╔╝██╔████╔██║█████╗  ██║   ██║   ██║   ██║   ██║",
-    "   ██║   ██╔══╝  ██╔══██╗██║╚██╔╝██║██╔══╝  ██║   ██║   ██║   ██║   ██║",
-    "   ██║   ███████╗██║  ██║██║ ╚═╝ ██║██║     ╚██████╔╝   ██║   ╚██████╔╝",
-    "   ╚═╝   ╚══════╝╚═╝  ╚═╝╚═╝     ╚═╝╚═╝      ╚═════╝    ╚═╝    ╚═════╝",
-];
-
-const LOGO_COLORS: [Color; LOGO_HEIGHT as usize] = [
-    Color::Rgb(255, 0, 0),
-    Color::Rgb(255, 127, 0),
-    Color::Rgb(255, 255, 0),
-    Color::Rgb(0, 255, 0),
-    Color::Rgb(0, 127, 255),
-    Color::Rgb(127, 0, 255),
-];
-
-fn render_logo(area: Rect, buf: &mut Buffer) {
-    let max_w = LOGO_LINES.iter().map(|l| l.chars().count()).max().unwrap_or(0);
-    let logo_w = max_w.min(area.width as usize);
-    let offset_x = area.x + area.width.saturating_sub(logo_w as u16);
-
-    for (i, line) in LOGO_LINES.iter().enumerate() {
-        let trimmed: String = line.chars().take(logo_w).collect();
-        let style = Style::default().fg(LOGO_COLORS[i]);
-        buf.set_span(offset_x, area.y + i as u16, &Span::styled(trimmed, style), logo_w as u16);
-    }
-}
+use crate::ui::render_logo;
 
 /// Truncate filename to fit cell width, appending "…" if needed.
 fn truncate_filename(name: &str, max_width: u16) -> String {
