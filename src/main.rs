@@ -37,7 +37,7 @@ use crossterm::{
 use ratatui::{backend::CrosstermBackend, Terminal};
 use ratatui_image::picker::Picker;
 
-use app::{spawn_image_loader, App, AppState, CELL_HEIGHT, IMAGES_PER_ROW};
+use app::{spawn_image_loader, App, AppState, LOGO_HEIGHT, MIN_CELL_H, MIN_CELL_W, MIN_LOGO_WIDTH};
 use lang::Lang;
 use scanner::scan_directory;
 use ui::browser::populate_protocol_cache;
@@ -97,14 +97,19 @@ fn run(
 
     loop {
         let size = terminal.size()?;
-        let visible_rows = (size.height / CELL_HEIGHT as u16) as usize;
-        let cell_w = (size.width / IMAGES_PER_ROW as u16).max(1);
-        let cell_h = CELL_HEIGHT as u16;
+        // Dynamic grid: cols/rows fill the space, no gaps
+        let logo_h = if size.width >= MIN_LOGO_WIDTH { LOGO_HEIGHT } else { 0 };
+        let avail_h = size.height.saturating_sub(logo_h + 1); // +1 status bar
+        let cols = (size.width / MIN_CELL_W).max(2) as usize;
+        let rows = (avail_h / MIN_CELL_H).max(1) as usize;
+        let cell_w = size.width / cols as u16;
+        let cell_h = avail_h / rows as u16;
 
-        app.visible_rows = visible_rows.max(1);
+        app.grid_cols = cols;
+        app.visible_rows = rows;
 
         if app.state == AppState::Browser {
-            populate_protocol_cache(&mut app, cell_w, cell_h, size.width, visible_rows.max(1));
+            populate_protocol_cache(&mut app, cell_w, cell_h, size);
         }
 
         // Check for completed background image loads

@@ -6,11 +6,8 @@ use ratatui::{
     widgets::{Block, Borders, Paragraph, Widget},
 };
 use ratatui_image::{protocol::Protocol, Image};
-use crate::app::{App, LoadSize, IMAGES_PER_ROW};
+use crate::app::{App, LoadSize, LOGO_HEIGHT, MIN_LOGO_WIDTH};
 use crate::ui::search::SearchBar;
-
-const LOGO_HEIGHT: u16 = 6;
-const MIN_LOGO_WIDTH: u16 = 70;
 
 const LOGO_LINES: [&str; LOGO_HEIGHT as usize] = [
     "████████╗███████╗██████╗ ███╗   ███╗███████╗ ██████╗ ████████╗ ██████╗",
@@ -85,8 +82,12 @@ impl<'a> Widget for BrowserView<'a> {
 
         self.app.clamp_scroll(visible_rows);
 
-        let start = self.app.scroll_row * IMAGES_PER_ROW;
-        let end = (start + visible_rows * IMAGES_PER_ROW).min(self.app.images.len());
+        let start = self.app.scroll_row * self.app.grid_cols;
+        let end = (start + visible_rows * self.app.grid_cols).min(self.app.images.len());
+
+        // Center the grid horizontally
+        let grid_w = self.app.grid_cols as u16 * cell_w;
+        let grid_x = area.x + (area.width.saturating_sub(grid_w)) / 2;
 
         let search_matches: Option<&[usize]> = self
             .app
@@ -96,10 +97,10 @@ impl<'a> Widget for BrowserView<'a> {
 
         for slot in start..end {
             let vis_idx = slot - start;
-            let col = (vis_idx % IMAGES_PER_ROW) as u16;
-            let row = (vis_idx / IMAGES_PER_ROW) as u16;
+            let col = (vis_idx % self.app.grid_cols) as u16;
+            let row = (vis_idx / self.app.grid_cols) as u16;
 
-            let x = area.x + col * cell_w;
+            let x = grid_x + col * cell_w;
             let y = grid_top + row as u16 * row_step;
             let cell_area = Rect { x, y, width: cell_w, height: cell_h };
 
@@ -315,17 +316,17 @@ pub fn populate_protocol_cache(
     app: &mut App,
     cell_w: u16,
     cell_h: u16,
-    terminal_width: u16,
-    visible_rows: usize,
+    term_size: ratatui::layout::Size,
 ) {
     if cell_w < 2 || cell_h < 2 {
         return;
     }
 
-    // Clear cache if terminal width changed (cell size changed, old protocols invalid)
-    if app.cache_width != terminal_width {
+    // Clear cache if terminal size changed (cell dimensions invalid)
+    if app.cache_width != term_size.width || app.cache_height != term_size.height {
         app.clear_protocol_cache();
-        app.cache_width = terminal_width;
+        app.cache_width = term_size.width;
+        app.cache_height = term_size.height;
     }
 
     let thumb_w = cell_w.saturating_sub(2);
@@ -334,12 +335,12 @@ pub fn populate_protocol_cache(
     app.thumb_h = thumb_h;
     let size = LoadSize::Thumbnail { w: thumb_w, h: thumb_h };
 
-    let start = app.scroll_row * IMAGES_PER_ROW;
-    let visible_end = (start + visible_rows * IMAGES_PER_ROW).min(app.images.len());
+    let start = app.scroll_row * app.grid_cols;
+    let visible_end = (start + app.visible_rows * app.grid_cols).min(app.images.len());
 
     // Prefetch: extend range by ±1 row
-    let prefetch_start = start.saturating_sub(IMAGES_PER_ROW);
-    let prefetch_end = (visible_end + IMAGES_PER_ROW).min(app.images.len());
+    let prefetch_start = start.saturating_sub(app.grid_cols);
+    let prefetch_end = (visible_end + app.grid_cols).min(app.images.len());
 
     for slot in prefetch_start..prefetch_end {
         if app.protocol_cache.contains_key(&slot) || app.requested.contains(&slot) {

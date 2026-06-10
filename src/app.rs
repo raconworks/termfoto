@@ -28,6 +28,8 @@ pub struct App {
     pub fullscreen_protocol: Option<Protocol>,
     pub fullscreen_pending: bool,
     pub cache_width: u16,
+    pub cache_height: u16,
+    pub grid_cols: usize,
     pub thumb_w: u16,
     pub thumb_h: u16,
     pub visible_rows: usize,
@@ -38,8 +40,10 @@ pub struct App {
     load_rx: Receiver<(usize, Protocol)>,
 }
 
-pub const IMAGES_PER_ROW: usize = 8;
-pub const CELL_HEIGHT: usize = 10;
+pub const MIN_CELL_W: u16 = 12;
+pub const MIN_CELL_H: u16 = 8;
+pub const LOGO_HEIGHT: u16 = 6;
+pub const MIN_LOGO_WIDTH: u16 = 70;
 const MAX_CACHE_SIZE: usize = 200;
 
 impl App {
@@ -59,6 +63,8 @@ impl App {
             fullscreen_protocol: None,
             fullscreen_pending: false,
             cache_width: 0,
+            cache_height: 0,
+            grid_cols: 8,
             thumb_w: 0,
             thumb_h: 0,
             visible_rows: 1,
@@ -83,11 +89,11 @@ impl App {
     }
 
     pub fn navigate_up(&mut self) {
-        self.selected = self.selected.saturating_sub(IMAGES_PER_ROW);
+        self.selected = self.selected.saturating_sub(self.grid_cols);
     }
 
     pub fn navigate_down(&mut self) {
-        let next = self.selected + IMAGES_PER_ROW;
+        let next = self.selected + self.grid_cols;
         if next < self.images.len() {
             self.selected = next;
         }
@@ -102,18 +108,18 @@ impl App {
     }
 
     pub fn navigate_page_down(&mut self, visible_rows: usize) {
-        let step = visible_rows * IMAGES_PER_ROW;
+        let step = visible_rows * self.grid_cols;
         let next = (self.selected + step).min(self.images.len().saturating_sub(1));
         self.selected = next;
     }
 
     pub fn navigate_page_up(&mut self, visible_rows: usize) {
-        let step = visible_rows * IMAGES_PER_ROW;
+        let step = visible_rows * self.grid_cols;
         self.selected = self.selected.saturating_sub(step);
     }
 
     pub fn clamp_scroll(&mut self, visible_rows: usize) {
-        let selected_row = self.selected / IMAGES_PER_ROW.max(1);
+        let selected_row = self.selected / self.grid_cols.max(1);
         if selected_row < self.scroll_row {
             self.scroll_row = selected_row;
         } else if selected_row >= self.scroll_row + visible_rows {
