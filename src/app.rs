@@ -10,6 +10,7 @@ use ratatui_image::{
 };
 
 use crate::scanner::ImageEntry;
+use crate::ui::search::{SearchAction, SearchState};
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum AppState {
@@ -28,6 +29,7 @@ pub struct App {
     pub cache_width: u16,
     pub visible_rows: usize,
     pub requested: HashSet<usize>,
+    pub search: Option<SearchState>,
     load_tx: Sender<LoadRequest>,
     load_rx: Receiver<(usize, Protocol)>,
 }
@@ -54,6 +56,7 @@ impl App {
             cache_width: 0,
             visible_rows: 1,
             requested: HashSet::new(),
+            search: None,
             load_tx,
             load_rx,
         }
@@ -192,22 +195,37 @@ impl App {
     /// Handle a key event. Returns true if the app should quit.
     pub fn handle_key(&mut self, code: KeyCode, modifiers: KeyModifiers) -> bool {
         match self.state {
-            AppState::Browser => match code {
-                KeyCode::Char('q') => return true,
-                KeyCode::Char('c') if modifiers.contains(KeyModifiers::CONTROL) => return true,
-                KeyCode::Left => self.navigate_left(),
-                KeyCode::Right => self.navigate_right(),
-                KeyCode::Up => self.navigate_up(),
-                KeyCode::Down => self.navigate_down(),
-                KeyCode::PageDown | KeyCode::Char(' ') => {
-                    self.navigate_page_down(self.visible_rows)
+            AppState::Browser => {
+                // In search mode, delegate to search handler
+                if self.search.is_some() {
+                    return self.handle_search_key(code, modifiers);
                 }
-                KeyCode::PageUp => self.navigate_page_up(self.visible_rows),
-                KeyCode::Home => self.navigate_home(),
-                KeyCode::End => self.navigate_end(),
-                KeyCode::Enter => self.enter_fullscreen(),
-                _ => {}
-            },
+
+                match code {
+                    KeyCode::Char('q') => return true,
+                    KeyCode::Char('c') if modifiers.contains(KeyModifiers::CONTROL) => return true,
+                    KeyCode::Char('/') | KeyCode::Char('\\') => {
+                        let trigger = match code {
+                            KeyCode::Char(c) => c,
+                            _ => '/',
+                        };
+                        self.search = Some(SearchState::new(self.selected, trigger));
+                        return false;
+                    }
+                    KeyCode::Left => self.navigate_left(),
+                    KeyCode::Right => self.navigate_right(),
+                    KeyCode::Up => self.navigate_up(),
+                    KeyCode::Down => self.navigate_down(),
+                    KeyCode::PageDown | KeyCode::Char(' ') => {
+                        self.navigate_page_down(self.visible_rows)
+                    }
+                    KeyCode::PageUp => self.navigate_page_up(self.visible_rows),
+                    KeyCode::Home => self.navigate_home(),
+                    KeyCode::End => self.navigate_end(),
+                    KeyCode::Enter => self.enter_fullscreen(),
+                    _ => {}
+                }
+            }
             AppState::Fullscreen => match code {
                 KeyCode::Char('q') | KeyCode::Esc | KeyCode::Enter => self.exit_fullscreen(),
                 KeyCode::Char('c') if modifiers.contains(KeyModifiers::CONTROL) => return true,
@@ -217,6 +235,24 @@ impl App {
             },
         }
         false
+    }
+
+    fn handle_search_key(&mut self, code: KeyCode, modifiers: KeyModifiers) -> bool {
+        let search = self.search.as_mut().unwrap();
+        match search.handle_key(code, modifiers, &self.images) {
+            SearchAction::JumpTo(idx) => {
+                self.selected = idx;
+                self.clamp_scroll(self.visible_rows.max(1));
+                false
+            }
+            SearchAction::Cancel => {
+                self.selected = self.search.as_ref().unwrap().saved_selected;
+                self.clamp_scroll(self.visible_rows.max(1));
+                self.search = None;
+                false
+            }
+            SearchAction::Continue => false,
+        }
     }
 }
 
@@ -374,5 +410,80 @@ mod tests {
         app.clear_protocol_cache();
         assert!(app.protocol_cache.is_empty());
         assert_eq!(app.cache_width, 0);
+    }
+
+    // ---- Search tests ----
+
+    fn make_app_with_names(names: &[&str]) -> App {
+        let images: Vec<ImageEntry> = names
+            .iter()
+            .map(|name| ImageEntry {
+                path: PathBuf::from(name),
+                filename: name.to_string(),
+            })
+            .collect();
+        let (tx, _rx) = std::sync::mpsc::channel::<LoadRequest>();
+        let (_tx2, rx2) = std::sync::mpsc::channel::<(usize, Protocol)>();
+        App::new(images, AppState::Browser, tx, rx2)
+    }
+
+    #[test]
+    fn test_search_triggers_on_slash() {
+        let mut app = make_app(20);
+        assert!(app.search.is_none());
+        app.handle_key(KeyCode::Char('/'), KeyModifiers::NONE);
+        assert!(app.search.is_some());
+        assert_eq!(app.search.as_ref().unwrap().trigger_char, '/');
+    }
+
+    #[test]
+    fn test_search_triggers_on_backslash() {
+        let mut app = make_app(20);
+        app.handle_key(KeyCode::Char('\\'), KeyModifiers::NONE);
+        assert!(app.search.is_some());
+        assert_eq!(app.search.as_ref().unwrap().trigger_char, '\\');
+    }
+
+    #[test]
+    fn test_search_esc_exits_search() {
+        let mut app = make_app(20);
+        app.selected = 10;
+        app.handle_key(KeyCode::Char('/'), KeyModifiers::NONE);
+        assert!(app.search.is_some());
+        app.handle_key(KeyCode::Esc, KeyModifiers::NONE);
+        assert!(app.search.is_none());
+        assert_eq!(app.selected, 10);
+    }
+
+    #[test]
+    fn test_search_char_jumps_and_pushes_to_query() {
+        let mut app = make_app(20);
+        app.handle_key(KeyCode::Char('/'), KeyModifiers::NONE);
+        app.handle_key(KeyCode::Char('0'), KeyModifiers::NONE);
+        let search = app.search.as_ref().unwrap();
+        assert_eq!(search.query, "0");
+        assert!(!search.matches.is_empty());
+    }
+
+    #[test]
+    fn test_search_backspace_works() {
+        let mut app = make_app(20);
+        app.handle_key(KeyCode::Char('/'), KeyModifiers::NONE);
+        app.handle_key(KeyCode::Char('x'), KeyModifiers::NONE);
+        app.handle_key(KeyCode::Backspace, KeyModifiers::NONE);
+        let search = app.search.as_ref().unwrap();
+        assert_eq!(search.query, "");
+    }
+
+    #[test]
+    fn test_search_tab_cycles_matches() {
+        let mut app = make_app_with_names(&["a_a.png", "a_b.png", "a_c.png", "x.png"]);
+        app.handle_key(KeyCode::Char('/'), KeyModifiers::NONE);
+        app.handle_key(KeyCode::Char('a'), KeyModifiers::NONE);
+        let first_match_idx = app.search.as_ref().unwrap().match_idx;
+        app.handle_key(KeyCode::Tab, KeyModifiers::NONE);
+        let search = app.search.as_ref().unwrap();
+        let expected = (first_match_idx + 1) % search.matches.len();
+        assert_eq!(search.match_idx, expected);
     }
 }
