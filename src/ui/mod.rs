@@ -1,5 +1,6 @@
 pub mod browser;
 pub mod preview;
+pub mod search;
 
 use ratatui::Frame;
 use crate::app::{App, AppState};
