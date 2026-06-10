@@ -1,8 +1,8 @@
 [中文版](README.zh.md)
 
-# darkroom
+# termfoto
 
-> A darkroom for your terminal — develop every photo with chafa.
+> Fast, lightweight terminal photo viewer — browse images like a pro.
 
 [![build](https://img.shields.io/badge/build-passing-brightgreen)](https://github.com)
 [![version](https://img.shields.io/badge/version-0.1.0-blue)](Cargo.toml)
@@ -33,7 +33,7 @@
 
 ## 🎯 Design Philosophy
 
-**Efficiency first, features second.** darkroom is not a slideshow, a batch exporter, or a photo editor. It does one thing — lets you see your images in the terminal, as fast as possible.
+**Efficiency first, features second.** termfoto is not a slideshow, a batch exporter, or a photo editor. It does one thing — lets you see your images in the terminal, as fast as possible.
 
 - **Main thread never blocks** — all I/O and encoding run on background threads
 - **Terminal-native experience** — like `ls` or `vim`: launches instantly, responds immediately
@@ -41,54 +41,54 @@
 
 ## 📦 Installation
 
-**Zero dependencies by default.** darkroom uses your terminal's built-in protocols (sixel/kitty) or halfblocks rendering with no system packages required.
+**Zero dependencies by default.** termfoto uses your terminal's built-in protocols (sixel/kitty) or halfblocks rendering with no system packages required.
 
-> 💡 **Want even better quality?** Install chafa for superior unicode rendering: `cargo install --git https://github.com/PineWhisperStudio/darkroom --features chafa` (requires `libchafa-dev`). Prebuilt binaries already include chafa statically — download and run, no deps needed.
+> 💡 **Want even better quality?** Install chafa for superior unicode rendering: `cargo install --git https://github.com/PineWhisperStudio/termfoto --features chafa` (requires `libchafa-dev`). Prebuilt binaries already include chafa statically — download and run, no deps needed.
 
 ### Option 1: Prebuilt binary (recommended)
 
-Download from [Releases](https://github.com/PineWhisperStudio/darkroom/releases), drop into `PATH`:
+Download from [Releases](https://github.com/PineWhisperStudio/termfoto/releases), drop into `PATH`:
 
 ```bash
-chmod +x darkroom
-sudo cp darkroom /usr/local/bin/
+chmod +x termfoto
+sudo cp termfoto /usr/local/bin/
 ```
 
 ### Option 2: .deb package (Debian/Ubuntu)
 
 ```bash
-curl -LO https://github.com/PineWhisperStudio/darkroom/releases/latest/download/darkroom_latest_amd64.deb
-sudo apt install ./darkroom_latest_amd64.deb
+curl -LO https://github.com/PineWhisperStudio/termfoto/releases/latest/download/termfoto_latest_amd64.deb
+sudo apt install ./termfoto_latest_amd64.deb
 ```
 
 ### Option 3: Cargo (from git)
 
 ```bash
-cargo install --git https://github.com/PineWhisperStudio/darkroom
+cargo install --git https://github.com/PineWhisperStudio/termfoto
 ```
 
 ### Option 4: Build from source
 
 ```bash
-git clone https://github.com/PineWhisperStudio/darkroom.git
-cd darkroom
+git clone https://github.com/PineWhisperStudio/termfoto.git
+cd termfoto
 cargo build --release
-ln -s $(pwd)/target/release/darkroom ~/.local/bin/dr
+ln -s $(pwd)/target/release/termfoto ~/.local/bin/dr
 ```
 
 ### Optional alias
 
 ```bash
 # Add to ~/.bashrc or ~/.config/fish/config.fish
-alias dr='darkroom'
+alias dr='termfoto'
 ```
 
 ## 🚀 Usage
 
 ```bash
-darkroom                 # browse current directory
-darkroom ~/Pictures      # browse a directory
-darkroom photo.jpg       # open a single image (fullscreen mode)
+termfoto                 # browse current directory
+termfoto ~/Pictures      # browse a directory
+termfoto photo.jpg       # open a single image (fullscreen mode)
 ```
 
 ## ⌨ Keybindings

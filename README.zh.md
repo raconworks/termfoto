@@ -1,8 +1,8 @@
 [English](README.md)
 
-# darkroom
+# termfoto
 
-> 终端里的暗房——用 chafa 冲洗每一张照片。
+> 快速轻量的终端图片浏览器——像专业人士一样看图。
 
 [![build](https://img.shields.io/badge/build-passing-brightgreen)](https://github.com)
 [![version](https://img.shields.io/badge/version-0.1.0-blue)](Cargo.toml)
@@ -33,7 +33,7 @@
 
 ## 🎯 设计哲学
 
-**效率优先，功能其次。** darkroom 不做幻灯片、不做批量导出、不做滤镜调整。它只做一件事——用最快的方式让你在终端里看清图片。
+**效率优先，功能其次。** termfoto 不做幻灯片、不做批量导出、不做滤镜调整。它只做一件事——用最快的方式让你在终端里看清图片。
 
 - **主线程永不阻塞** — 所有 I/O 和编码都在后台线程执行
 - **终端原生体验** — 就像 `ls` 或 `vim`，启动瞬间，操作即时
@@ -41,54 +41,54 @@
 
 ## 📦 安装
 
-**默认零依赖。** darkroom 使用终端内置协议（sixel/kitty）或 halfblocks 渲染，无需安装任何系统包。
+**默认零依赖。** termfoto 使用终端内置协议（sixel/kitty）或 halfblocks 渲染，无需安装任何系统包。
 
-> 💡 **想要更好的画质？** 安装 chafa 获得更优的 unicode 渲染：`cargo install --git https://github.com/PineWhisperStudio/darkroom --features chafa`（需要 `libchafa-dev`）。预编译二进制已静态链接 chafa——下载即用，无需依赖。
+> 💡 **想要更好的画质？** 安装 chafa 获得更优的 unicode 渲染：`cargo install --git https://github.com/PineWhisperStudio/termfoto --features chafa`（需要 `libchafa-dev`）。预编译二进制已静态链接 chafa——下载即用，无需依赖。
 
 ### 方式一：预编译二进制（推荐）
 
-从 [Releases](https://github.com/PineWhisperStudio/darkroom/releases) 下载二进制，放到 `PATH` 中：
+从 [Releases](https://github.com/PineWhisperStudio/termfoto/releases) 下载二进制，放到 `PATH` 中：
 
 ```bash
-chmod +x darkroom
-sudo cp darkroom /usr/local/bin/
+chmod +x termfoto
+sudo cp termfoto /usr/local/bin/
 ```
 
 ### 方式二：.deb 包（Debian/Ubuntu）
 
 ```bash
-curl -LO https://github.com/PineWhisperStudio/darkroom/releases/latest/download/darkroom_latest_amd64.deb
-sudo apt install ./darkroom_latest_amd64.deb
+curl -LO https://github.com/PineWhisperStudio/termfoto/releases/latest/download/termfoto_latest_amd64.deb
+sudo apt install ./termfoto_latest_amd64.deb
 ```
 
 ### 方式三：Cargo（从 git 安装）
 
 ```bash
-cargo install --git https://github.com/PineWhisperStudio/darkroom
+cargo install --git https://github.com/PineWhisperStudio/termfoto
 ```
 
 ### 方式四：从源码编译
 
 ```bash
-git clone https://github.com/PineWhisperStudio/darkroom.git
-cd darkroom
+git clone https://github.com/PineWhisperStudio/termfoto.git
+cd termfoto
 cargo build --release
-ln -s $(pwd)/target/release/darkroom ~/.local/bin/dr
+ln -s $(pwd)/target/release/termfoto ~/.local/bin/dr
 ```
 
 ### 创建别名
 
 ```bash
 # 可选：在 ~/.bashrc 或 ~/.config/fish/config.fish 中添加
-alias dr='darkroom'
+alias dr='termfoto'
 ```
 
 ## 🚀 使用
 
 ```bash
-darkroom                 # 浏览当前目录
-darkroom ~/图片           # 浏览指定目录
-darkroom photo.jpg       # 直接打开单张图片（全屏模式）
+termfoto                 # 浏览当前目录
+termfoto ~/图片           # 浏览指定目录
+termfoto photo.jpg       # 直接打开单张图片（全屏模式）
 ```
 
 ## ⌨ 快捷键

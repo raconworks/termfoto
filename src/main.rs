@@ -63,7 +63,7 @@ fn main() -> Result<()> {
         }
         Some(ref p) => {
             eprintln!(
-                "darkroom: '{}' is not a supported image or directory",
+                "termfoto: '{}' is not a supported image or directory",
                 p.display()
             );
             std::process::exit(1);
@@ -71,7 +71,7 @@ fn main() -> Result<()> {
     };
 
     if images.is_empty() && matches!(initial_state, AppState::Browser) {
-        eprintln!("darkroom: no images found in the specified directory");
+        eprintln!("termfoto: no images found in the specified directory");
         std::process::exit(0);
     }
 

@@ -1,9 +1,9 @@
 [package]
-name = "darkroom"
+name = "termfoto"
 version = "0.1.0"
 edition = "2021"
-description = "终端图片浏览器——高效、轻量、chafa 渲染"
-repository = "https://github.com/boyangso/darkroom"
+description = "终端图片浏览器——快速、轻量、Vim 式操作"
+repository = "https://github.com/boyangso/termfoto"
 license = "MIT"
 keywords = ["tui", "image", "viewer", "terminal", "chafa"]
 categories = ["command-line-utilities", "multimedia::images"]
@@ -14,7 +14,7 @@ chafa = ["ratatui-image/chafa-dyn", "ratatui-image/image-defaults"]
 chafa-static = ["ratatui-image/chafa-static", "ratatui-image/image-defaults"]
 
 [[bin]]
-name = "darkroom"
+name = "termfoto"
 path = "src/main.rs"
 
 [dependencies]

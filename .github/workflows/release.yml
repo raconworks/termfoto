@@ -26,19 +26,19 @@ jobs:
       - name: 打包 .deb
         run: |
           VERSION="${GITHUB_REF_NAME#v}"
-          PKG="darkroom_${VERSION}_amd64"
+          PKG="termfoto_${VERSION}_amd64"
           mkdir -p "${PKG}/DEBIAN"
           mkdir -p "${PKG}/usr/local/bin"
-          cp target/release/darkroom "${PKG}/usr/local/bin/"
+          cp target/release/termfoto "${PKG}/usr/local/bin/"
           cat > "${PKG}/DEBIAN/control" <<EOF
-          Package: darkroom
+          Package: termfoto
           Version: ${VERSION}
           Architecture: amd64
-          Maintainer: darkroom
+          Maintainer: termfoto
           Description: 终端图片浏览器——高效、轻量、chafa 渲染
           EOF
           dpkg-deb --build "${PKG}"
-          cp "${PKG}.deb" darkroom_latest_amd64.deb
+          cp "${PKG}.deb" termfoto_latest_amd64.deb
         env:
           GITHUB_REF_NAME: ${{ github.ref_name }}
 
@@ -46,5 +46,5 @@ jobs:
         uses: softprops/action-gh-release@v1
         with:
           files: |
-            target/release/darkroom
-            darkroom_*.deb
+            target/release/termfoto
+            termfoto_*.deb
