@@ -27,11 +27,11 @@ impl Lang {
     pub fn browser_status(&self, name: &str, selected: usize, total: usize) -> String {
         match self {
             Lang::Zh => format!(
-                " {} [{}/{}]  ←→↑↓ 导航  PgUp/PgDown/Space翻页  Home/End首尾  Enter全屏  /搜索  q退出",
+                " {} [{}/{}]  ←→↑↓ 导航  PgUp/PgDown/Space翻页  Home/End首尾  Enter全屏  /搜索  L切换语言  q退出",
                 name, selected, total
             ),
             Lang::En => format!(
-                " {} [{}/{}]  ←→↑↓ Nav  PgUp/PgDown/Space Page  Home/End  Enter view  /search  q quit",
+                " {} [{}/{}]  ←→↑↓ Nav  PgUp/PgDown/Space Page  Home/End  Enter view  /search  L lang  q quit",
                 name, selected, total
             ),
         }
@@ -71,11 +71,11 @@ impl Lang {
     pub fn preview_status(&self, name: &str, selected: usize, total: usize, status: &str) -> String {
         match self {
             Lang::Zh => format!(
-                " {} [{}/{}]  原图尺寸  ← → 切换  Enter/Esc/q 返回{}",
+                " {} [{}/{}]  原图尺寸  ← → 切换  Enter/Esc/q 返回  L切换语言{}",
                 name, selected, total, status
             ),
             Lang::En => format!(
-                " {} [{}/{}]  original size  ← → prev/next  Enter/Esc/q back{}",
+                " {} [{}/{}]  original size  ← → prev/next  Enter/Esc/q back  L lang{}",
                 name, selected, total, status
             ),
         }
