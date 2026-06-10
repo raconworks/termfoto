@@ -39,6 +39,7 @@ use ratatui::{backend::CrosstermBackend, Terminal};
 use ratatui_image::picker::Picker;
 
 use app::{spawn_image_loader, App, AppState, CELL_HEIGHT, IMAGES_PER_ROW};
+use lang::Lang;
 use scanner::scan_directory;
 use ui::browser::populate_protocol_cache;
 
@@ -100,7 +101,7 @@ fn run(
     let paths: Vec<PathBuf> = images.iter().map(|e| e.path.clone()).collect();
     let (load_tx, load_rx) = spawn_image_loader(picker.clone(), paths);
 
-    let mut app = App::new(images, initial_state, load_tx, load_rx);
+    let mut app = App::new(images, initial_state, load_tx, load_rx, Lang::detect());
 
     loop {
         let size = terminal.size()?;

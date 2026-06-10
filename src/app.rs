@@ -9,6 +9,7 @@ use ratatui_image::{
     Resize, FilterType,
 };
 
+use crate::lang::Lang;
 use crate::scanner::ImageEntry;
 use crate::ui::search::{SearchAction, SearchState};
 
@@ -30,6 +31,7 @@ pub struct App {
     pub visible_rows: usize,
     pub requested: HashSet<usize>,
     pub search: Option<SearchState>,
+    pub lang: Lang,
     load_tx: Sender<LoadRequest>,
     load_rx: Receiver<(usize, Protocol)>,
 }
@@ -44,6 +46,7 @@ impl App {
         state: AppState,
         load_tx: Sender<LoadRequest>,
         load_rx: Receiver<(usize, Protocol)>,
+        lang: Lang,
     ) -> Self {
         Self {
             state,
@@ -57,6 +60,7 @@ impl App {
             visible_rows: 1,
             requested: HashSet::new(),
             search: None,
+            lang,
             load_tx,
             load_rx,
         }
@@ -204,6 +208,9 @@ impl App {
                 match code {
                     KeyCode::Char('q') => return true,
                     KeyCode::Char('c') if modifiers.contains(KeyModifiers::CONTROL) => return true,
+                    KeyCode::Char('L') | KeyCode::Char('l') => {
+                        self.lang.toggle();
+                    }
                     KeyCode::Char('/') | KeyCode::Char('\\') => {
                         let trigger = match code {
                             KeyCode::Char(c) => c,
@@ -229,6 +236,9 @@ impl App {
             AppState::Fullscreen => match code {
                 KeyCode::Char('q') | KeyCode::Esc | KeyCode::Enter => self.exit_fullscreen(),
                 KeyCode::Char('c') if modifiers.contains(KeyModifiers::CONTROL) => return true,
+                KeyCode::Char('L') | KeyCode::Char('l') => {
+                    self.lang.toggle();
+                }
                 KeyCode::Left => self.fullscreen_prev(),
                 KeyCode::Right => self.fullscreen_next(),
                 _ => {}
@@ -354,7 +364,7 @@ mod tests {
             .collect();
         let (tx, _rx) = std::sync::mpsc::channel::<LoadRequest>();
         let (_tx2, rx2) = std::sync::mpsc::channel::<(usize, Protocol)>();
-        App::new(images, AppState::Browser, tx, rx2)
+        App::new(images, AppState::Browser, tx, rx2, Lang::Zh)
     }
 
     #[test]
@@ -455,7 +465,7 @@ mod tests {
             .collect();
         let (tx, _rx) = std::sync::mpsc::channel::<LoadRequest>();
         let (_tx2, rx2) = std::sync::mpsc::channel::<(usize, Protocol)>();
-        App::new(images, AppState::Browser, tx, rx2)
+        App::new(images, AppState::Browser, tx, rx2, Lang::Zh)
     }
 
     #[test]
