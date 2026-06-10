@@ -99,8 +99,11 @@ darkroom photo.jpg       # 直接打开单张图片（全屏模式）
 | 浏览器 | `Space` `PgUp` `PgDn` | 翻页 |
 | 浏览器 | `Home` `End` | 跳到首/尾 |
 | 浏览器 | `Enter` | 全屏查看 |
+| 浏览器 | `/` `\` | 搜索文件名 |
+| 浏览器 | `L` | 切换语言 |
 | 浏览器 | `q` `Ctrl+C` | 退出 |
 | 全屏 | `←` `→` | 切换图片 |
+| 全屏 | `L` | 切换语言 |
 | 全屏 | `Enter` `Esc` `q` | 返回浏览器 |
 | 全屏 | `Ctrl+C` | 退出 |
 
@@ -110,7 +113,7 @@ darkroom photo.jpg       # 直接打开单张图片（全屏模式）
 |------|------|
 | [ratatui](https://ratatui.rs) | TUI 框架 |
 | [ratatui-image](https://github.com/ratatui/ratatui-image) + [chafa](https://hpjansson.org/chafa/) | 图片 → Unicode 字符渲染 |
-| [image](https://github.com/image-rs/image) | 图片解码（PNG/JPEG/WebP/GIF/BMP/TIFF/ICO） |
+| [image](https://github.com/image-rs/image) | 图片解码（PNG/JPEG/WebP） |
 | [clap](https://github.com/clap-rs/clap) | CLI 参数解析 |
 
 ## 📜 许可证

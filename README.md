@@ -99,8 +99,11 @@ darkroom photo.jpg       # open a single image (fullscreen mode)
 | Browser | `Space` `PgUp` `PgDn` | Page up/down |
 | Browser | `Home` `End` | Jump to first/last |
 | Browser | `Enter` | View fullscreen |
+| Browser | `/` `\` | Search filenames |
+| Browser | `L` | Toggle language |
 | Browser | `q` `Ctrl+C` | Quit |
 | Fullscreen | `←` `→` | Previous/next image |
+| Fullscreen | `L` | Toggle language |
 | Fullscreen | `Enter` `Esc` `q` | Back to browser |
 | Fullscreen | `Ctrl+C` | Quit |
 
