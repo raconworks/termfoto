@@ -30,7 +30,7 @@ impl SearchState {
     pub fn handle_key(
         &mut self,
         code: KeyCode,
-        modifiers: KeyModifiers,
+        _modifiers: KeyModifiers,
         images: &[ImageEntry],
     ) -> SearchAction {
         match code {
