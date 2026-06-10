@@ -78,7 +78,7 @@ impl<'a> Widget for BrowserView<'a> {
 
         // Status bar: search bar or normal status
         if let Some(ref search) = self.app.search {
-            SearchBar { state: search }.render(status_area, buf);
+            SearchBar { state: search, lang: self.app.lang }.render(status_area, buf);
         } else {
             let selected_name = self
                 .app
@@ -86,8 +86,7 @@ impl<'a> Widget for BrowserView<'a> {
                 .get(self.app.selected)
                 .map(|e| e.filename.as_str())
                 .unwrap_or("");
-            let info = format!(
-                " {} [{}/{}]  ←→↑↓ 导航  PgUp/PgDown/Space翻页  Home/End首尾  Enter全屏  /搜索  q退出",
+            let info = self.app.lang.browser_status(
                 selected_name,
                 self.app.selected.saturating_add(1).min(self.app.images.len()),
                 self.app.images.len(),

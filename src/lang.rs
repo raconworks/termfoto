@@ -23,19 +23,31 @@ impl Lang {
         };
     }
 
-    /// Browser status bar format: filename, index, total, key hints
-    pub fn browser_status_fmt(&self) -> &'static str {
+    /// Browser status bar: filename, index, total, key hints
+    pub fn browser_status(&self, name: &str, selected: usize, total: usize) -> String {
         match self {
-            Lang::Zh => " {} [{}/{}]  ←→↑↓ 导航  PgUp/PgDown/Space翻页  Home/End首尾  Enter全屏  /搜索  q退出",
-            Lang::En => " {} [{}/{}]  ←→↑↓ Nav  PgUp/PgDown/Space Page  Home/End  Enter view  /search  q quit",
+            Lang::Zh => format!(
+                " {} [{}/{}]  ←→↑↓ 导航  PgUp/PgDown/Space翻页  Home/End首尾  Enter全屏  /搜索  q退出",
+                name, selected, total
+            ),
+            Lang::En => format!(
+                " {} [{}/{}]  ←→↑↓ Nav  PgUp/PgDown/Space Page  Home/End  Enter view  /search  q quit",
+                name, selected, total
+            ),
         }
     }
 
     /// Search bar hint when there are matches
-    pub fn search_hint_matches(&self) -> &'static str {
+    pub fn search_hint_matches(&self, current: usize, total: usize) -> String {
         match self {
-            Lang::Zh => " [{}/{} matches]  Tab/Shift+Tab切换  Enter全屏  Esc取消",
-            Lang::En => " [{}/{} matches]  Tab/Shift+Tab cycle  Enter view  Esc cancel",
+            Lang::Zh => format!(
+                " [{}/{} matches]  Tab/Shift+Tab切换  Enter全屏  Esc取消",
+                current, total
+            ),
+            Lang::En => format!(
+                " [{}/{} matches]  Tab/Shift+Tab cycle  Enter view  Esc cancel",
+                current, total
+            ),
         }
     }
 
@@ -55,11 +67,17 @@ impl Lang {
         }
     }
 
-    /// Fullscreen status bar format: filename, index, total, loading suffix
-    pub fn preview_status_fmt(&self) -> &'static str {
+    /// Fullscreen status bar: filename, index, total, loading suffix
+    pub fn preview_status(&self, name: &str, selected: usize, total: usize, status: &str) -> String {
         match self {
-            Lang::Zh => " {} [{}/{}]  原图尺寸  ← → 切换  Enter/Esc/q 返回{}",
-            Lang::En => " {} [{}/{}]  original size  ← → prev/next  Enter/Esc/q back{}",
+            Lang::Zh => format!(
+                " {} [{}/{}]  原图尺寸  ← → 切换  Enter/Esc/q 返回{}",
+                name, selected, total, status
+            ),
+            Lang::En => format!(
+                " {} [{}/{}]  original size  ← → prev/next  Enter/Esc/q back{}",
+                name, selected, total, status
+            ),
         }
     }
 
@@ -101,22 +119,22 @@ mod tests {
     #[test]
     fn test_all_methods_return_non_empty() {
         for lang in [Lang::Zh, Lang::En] {
-            assert!(!lang.browser_status_fmt().is_empty());
-            assert!(!lang.search_hint_matches().is_empty());
+            assert!(!lang.browser_status("test.png", 1, 10).is_empty());
+            assert!(!lang.search_hint_matches(1, 5).is_empty());
             assert!(!lang.search_hint_empty().is_empty());
             assert!(!lang.search_hint_none().is_empty());
-            assert!(!lang.preview_status_fmt().is_empty());
+            assert!(!lang.preview_status("test.png", 1, 10, "").is_empty());
             assert!(!lang.loading_text().is_empty());
         }
     }
 
     #[test]
     fn test_zh_en_strings_differ() {
-        assert_ne!(Lang::Zh.browser_status_fmt(), Lang::En.browser_status_fmt());
-        assert_ne!(Lang::Zh.search_hint_matches(), Lang::En.search_hint_matches());
+        assert_ne!(Lang::Zh.browser_status("a", 1, 5), Lang::En.browser_status("a", 1, 5));
+        assert_ne!(Lang::Zh.search_hint_matches(1, 5), Lang::En.search_hint_matches(1, 5));
         assert_ne!(Lang::Zh.search_hint_empty(), Lang::En.search_hint_empty());
         assert_ne!(Lang::Zh.search_hint_none(), Lang::En.search_hint_none());
-        assert_ne!(Lang::Zh.preview_status_fmt(), Lang::En.preview_status_fmt());
+        assert_ne!(Lang::Zh.preview_status("a", 1, 5, ""), Lang::En.preview_status("a", 1, 5, ""));
         assert_ne!(Lang::Zh.loading_text(), Lang::En.loading_text());
     }
 }

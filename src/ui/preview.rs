@@ -51,13 +51,12 @@ impl<'a> Widget for PreviewView<'a> {
 
         if let Some(entry) = self.app.images.get(self.app.selected) {
             let status = if self.app.fullscreen_pending {
-                " ⏳ 加载中..."
+                self.app.lang.loading_text()
             } else {
                 ""
             };
-            let info = format!(
-                " {} [{}/{}]  原图尺寸  ← → 切换  Enter/Esc/q 返回{}",
-                entry.filename,
+            let info = self.app.lang.preview_status(
+                &entry.filename,
                 self.app.selected + 1,
                 self.app.images.len(),
                 status,

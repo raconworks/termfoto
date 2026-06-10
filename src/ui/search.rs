@@ -1,5 +1,6 @@
 use crossterm::event::{KeyCode, KeyModifiers};
 
+use crate::lang::Lang;
 use crate::scanner::ImageEntry;
 
 pub struct SearchState {
@@ -146,6 +147,7 @@ use ratatui::{
 
 pub struct SearchBar<'a> {
     pub state: &'a SearchState,
+    pub lang: Lang,
 }
 
 impl<'a> Widget for SearchBar<'a> {
@@ -167,14 +169,11 @@ impl<'a> Widget for SearchBar<'a> {
         let display_query = format!("{}{}{}", prompt, query, cursor);
 
         let hint = if total_matches > 0 {
-            format!(
-                " [{}/{} matches]  Tab/Shift+Tab切换  Enter全屏  Esc取消",
-                current, total_matches
-            )
+            self.lang.search_hint_matches(current, total_matches)
         } else if query.is_empty() {
-            " Tab/Shift+Tab切换  Enter全屏  Esc取消".to_string()
+            self.lang.search_hint_empty().to_string()
         } else {
-            " [0/0]  Tab/Shift+Tab切换  Enter全屏  Esc取消".to_string()
+            self.lang.search_hint_none().to_string()
         };
 
         let query_style = if total_matches == 0 && !query.is_empty() {
@@ -225,7 +224,7 @@ mod tests {
     #[test]
     fn test_searchbar_with_no_query() {
         let state = SearchState::new(0, '/');
-        let bar = SearchBar { state: &state };
+        let bar = SearchBar { state: &state, lang: Lang::Zh };
         let area = Rect {
             x: 0,
             y: 0,
