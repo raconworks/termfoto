@@ -43,9 +43,15 @@
 
 **Zero dependencies by default.** termfoto uses your terminal's built-in protocols (sixel/kitty) or halfblocks rendering with no system packages required.
 
-> 💡 **Want even better quality?** Install chafa for superior unicode rendering: `cargo install --git https://github.com/PineWhisperStudio/termfoto --features chafa` (requires `libchafa-dev`). Prebuilt binaries already include chafa statically — download and run, no deps needed.
+> 💡 **Want even better quality?** Install with chafa support: `cargo install termfoto --features chafa` (requires `libchafa-dev`). Prebuilt binaries include chafa statically — download and run, no deps needed.
 
-### Option 1: Prebuilt binary (recommended)
+### Option 1: Cargo (recommended)
+
+```bash
+cargo install termfoto
+```
+
+### Option 2: Prebuilt binary
 
 Download from [Releases](https://github.com/PineWhisperStudio/termfoto/releases), drop into `PATH`:
 
@@ -54,17 +60,11 @@ chmod +x termfoto
 sudo cp termfoto /usr/local/bin/
 ```
 
-### Option 2: .deb package (Debian/Ubuntu)
+### Option 3: .deb package (Debian/Ubuntu)
 
 ```bash
 curl -LO https://github.com/PineWhisperStudio/termfoto/releases/latest/download/termfoto_latest_amd64.deb
 sudo apt install ./termfoto_latest_amd64.deb
-```
-
-### Option 3: Cargo (from git)
-
-```bash
-cargo install --git https://github.com/PineWhisperStudio/termfoto
 ```
 
 ### Option 4: Build from source

@@ -43,9 +43,15 @@
 
 **默认零依赖。** termfoto 使用终端内置协议（sixel/kitty）或 halfblocks 渲染，无需安装任何系统包。
 
-> 💡 **想要更好的画质？** 安装 chafa 获得更优的 unicode 渲染：`cargo install --git https://github.com/PineWhisperStudio/termfoto --features chafa`（需要 `libchafa-dev`）。预编译二进制已静态链接 chafa——下载即用，无需依赖。
+> 💡 **想要更好的画质？** 安装 chafa 支持：`cargo install termfoto --features chafa`（需要 `libchafa-dev`）。预编译二进制已静态链接 chafa——下载即用，无需依赖。
 
-### 方式一：预编译二进制（推荐）
+### 方式一：Cargo（推荐）
+
+```bash
+cargo install termfoto
+```
+
+### 方式二：预编译二进制
 
 从 [Releases](https://github.com/PineWhisperStudio/termfoto/releases) 下载二进制，放到 `PATH` 中：
 
@@ -54,17 +60,11 @@ chmod +x termfoto
 sudo cp termfoto /usr/local/bin/
 ```
 
-### 方式二：.deb 包（Debian/Ubuntu）
+### 方式三：.deb 包（Debian/Ubuntu）
 
 ```bash
 curl -LO https://github.com/PineWhisperStudio/termfoto/releases/latest/download/termfoto_latest_amd64.deb
 sudo apt install ./termfoto_latest_amd64.deb
-```
-
-### 方式三：Cargo（从 git 安装）
-
-```bash
-cargo install --git https://github.com/PineWhisperStudio/termfoto
 ```
 
 ### 方式四：从源码编译

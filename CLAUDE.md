@@ -5,6 +5,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## 构建与测试
 
 ```bash
+cargo install termfoto   # 从 crates.io 安装（推荐）
 cargo build              # 编译
 cargo run                # 运行（默认当前目录）
 cargo run -- <路径>      # 指定目录或图片文件

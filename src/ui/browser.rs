@@ -34,7 +34,7 @@ fn render_logo(area: Rect, buf: &mut Buffer) {
 
     for (i, line) in LOGO_LINES.iter().enumerate() {
         let trimmed: String = line.chars().take(logo_w).collect();
-        let style = Style::default().fg(LOGO_COLORS[i]).bg(Color::Black);
+        let style = Style::default().fg(LOGO_COLORS[i]);
         buf.set_span(offset_x, area.y + i as u16, &Span::styled(trimmed, style), logo_w as u16);
     }
 }
