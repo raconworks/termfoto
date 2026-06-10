@@ -33,7 +33,7 @@
 
 ## 🎯 Design Philosophy
 
-**Efficiency first, features second.** termfoto is not a slideshow, a batch exporter, or a photo editor. It does one thing — lets you see your images in the terminal, as fast as possible.
+**Do one thing, and do it well.** termfoto is not a slideshow, a batch exporter, or a photo editor. It does one thing — lets you see your images in the terminal, as fast as possible.
 
 - **Main thread never blocks** — all I/O and encoding run on background threads
 - **Terminal-native experience** — like `ls` or `vim`: launches instantly, responds immediately

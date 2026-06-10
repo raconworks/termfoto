@@ -9,6 +9,42 @@ use ratatui_image::{protocol::Protocol, Image};
 use crate::app::{App, LoadSize, IMAGES_PER_ROW};
 use crate::ui::search::SearchBar;
 
+const LOGO_HEIGHT: u16 = 6;
+const MIN_LOGO_WIDTH: u16 = 70;
+
+const LOGO_LINES: [&str; LOGO_HEIGHT as usize] = [
+    "████████╗███████╗██████╗ ███╗   ███╗███████╗ ██████╗ ████████╗ ██████╗",
+    "╚══██╔══╝██╔════╝██╔══██╗████╗ ████║██╔════╝██╔═══██╗╚══██╔══╝██╔═══██╗",
+    "   ██║   █████╗  ██████╔╝██╔████╔██║█████╗  ██║   ██║   ██║   ██║   ██║",
+    "   ██║   ██╔══╝  ██╔══██╗██║╚██╔╝██║██╔══╝  ██║   ██║   ██║   ██║   ██║",
+    "   ██║   ███████╗██║  ██║██║ ╚═╝ ██║██║     ╚██████╔╝   ██║   ╚██████╔╝",
+    "   ╚═╝   ╚══════╝╚═╝  ╚═╝╚═╝     ╚═╝╚═╝      ╚═════╝    ╚═╝    ╚═════╝",
+];
+
+const LOGO_COLORS: [Color; LOGO_HEIGHT as usize] = [
+    Color::Rgb(255, 0, 0),
+    Color::Rgb(255, 127, 0),
+    Color::Rgb(255, 255, 0),
+    Color::Rgb(0, 255, 0),
+    Color::Rgb(0, 127, 255),
+    Color::Rgb(127, 0, 255),
+];
+
+fn render_logo(area: Rect, buf: &mut Buffer) {
+    let max_w = LOGO_LINES.iter().map(|l| l.chars().count()).max().unwrap_or(0);
+    let logo_w = max_w.min(area.width as usize);
+    let offset_x = area.x + area.width.saturating_sub(logo_w as u16);
+
+    for (i, line) in LOGO_LINES.iter().enumerate() {
+        if i as u16 >= area.height {
+            break;
+        }
+        let trimmed: String = line.chars().take(logo_w).collect();
+        let style = Style::default().fg(LOGO_COLORS[i]).bg(Color::Black);
+        buf.set_span(offset_x, area.y + i as u16, &Span::styled(trimmed, style), logo_w as u16);
+    }
+}
+
 pub struct BrowserView<'a> {
     pub app: &'a mut App,
     pub cell_w: u16,
@@ -21,13 +57,20 @@ impl<'a> Widget for BrowserView<'a> {
             return;
         }
 
+        let show_logo = area.width >= MIN_LOGO_WIDTH;
+        let logo_height = if show_logo { LOGO_HEIGHT } else { 0 };
         let status_height = 1u16;
         let grid_area = Rect {
-            height: area.height.saturating_sub(status_height),
+            height: area.height.saturating_sub(logo_height + status_height),
+            ..area
+        };
+        let logo_area = Rect {
+            y: area.y + grid_area.height,
+            height: logo_height,
             ..area
         };
         let status_area = Rect {
-            y: area.y + grid_area.height,
+            y: area.y + grid_area.height + logo_height,
             height: status_height,
             ..area
         };
@@ -74,6 +117,11 @@ impl<'a> Widget for BrowserView<'a> {
                 slot,
                 search_query,
             );
+        }
+
+        // Logo (right-aligned, below grid)
+        if show_logo {
+            render_logo(logo_area, buf);
         }
 
         // Status bar: search bar or normal status
