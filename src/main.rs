@@ -97,28 +97,29 @@ fn run(
 
     loop {
         let size = terminal.size()?;
-        // Dynamic grid: square cells, cols/rows fill the space
+        // Dynamic grid: visually square cells (终端字符 ≈ 1:2 宽高比)
         let logo_h = if size.width >= MIN_LOGO_WIDTH { LOGO_HEIGHT } else { 0 };
         let avail_h = size.height.saturating_sub(logo_h + 1); // +1 status bar
+        let char_ratio = picker.font_size().height as f32 / picker.font_size().width as f32;
         let cols = (size.width / MIN_CELL).max(2) as usize;
-        let rows = (avail_h / MIN_CELL).max(1) as usize;
-        // Square cells: use the smaller dimension so cells stay square
         let cell_w = size.width / cols as u16;
+        // Visual square: cell_h ≈ cell_w / char_ratio
+        let cell_h = ((cell_w as f32 / char_ratio) as u16).max(1);
+        let rows = (avail_h / cell_h).max(1) as usize;
         let cell_h = avail_h / rows as u16;
-        let cell = cell_w.min(cell_h);
 
         app.grid_cols = cols;
         app.visible_rows = rows;
 
         if app.state == AppState::Browser {
-            populate_protocol_cache(&mut app, cell, cell, size);
+            populate_protocol_cache(&mut app, cell_w, cell_h, size);
         }
 
         // Check for completed background image loads
         app.collect_loads();
 
         // Render
-        terminal.draw(|f| ui::draw(f, &mut app, cell, cell))?;
+        terminal.draw(|f| ui::draw(f, &mut app, cell_w, cell_h))?;
 
         if event::poll(Duration::from_millis(50))? {
             if let Event::Key(key) = event::read()? {
