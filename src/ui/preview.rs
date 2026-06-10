@@ -2,7 +2,7 @@ use ratatui::{
     buffer::Buffer,
     layout::{Alignment, Rect},
     style::{Color, Style},
-    text::Span,
+    text::{Line, Span},
     widgets::{Paragraph, Widget},
 };
 use ratatui_image::Image;
@@ -98,14 +98,10 @@ impl<'a> Widget for PreviewView<'a> {
             };
             lines.push(format!("{}: {}", lang.label_path(), display_path));
 
-            let mut spans: Vec<Span> = Vec::new();
-            for (i, line) in lines.iter().enumerate() {
-                if i > 0 {
-                    spans.push(Span::raw("\n"));
-                }
-                spans.push(Span::styled(line.clone(), Style::default().fg(Color::White)));
-            }
-            Paragraph::new(ratatui::text::Line::from(spans))
+            let text_lines: Vec<Line> = lines.iter()
+                .map(|l| Line::from(Span::styled(l.clone(), Style::default().fg(Color::White))))
+                .collect();
+            Paragraph::new(text_lines)
                 .alignment(Alignment::Left)
                 .render(info_area, buf);
         }
