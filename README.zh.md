@@ -43,7 +43,7 @@
 
 ### 系统依赖
 
-所有安装方式都需要系统安装 `libchafa`：
+从源码编译（含 chafa）需要 `libchafa-dev`。预编译二进制已静态链接 chafa——**无需任何系统依赖**。
 
 ```bash
 # Debian/Ubuntu
@@ -56,34 +56,34 @@ sudo pacman -S chafa
 brew install chafa
 ```
 
-> 💡 **不想装 chafa？** darkroom 可使用终端内置协议（sixel/kitty）或 halfblocks 渲染。无依赖安装：`cargo install darkroom --no-default-features`。预编译二进制已静态链接 chafa，无需任何系统依赖。
+> 💡 **不想装 chafa？** darkroom 可使用终端内置协议（sixel/kitty）或 halfblocks 渲染。无依赖安装：`cargo install --git https://github.com/PineWhisperStudio/darkroom --no-default-features`。预编译二进制已静态链接 chafa，无需任何系统依赖。
 
-### 方式一：Cargo（推荐，需要 Rust）
+### 方式一：预编译二进制（推荐）
 
-```bash
-cargo install darkroom
-```
-
-### 方式二：预编译二进制
-
-从 [Releases](https://github.com/boyangso/darkroom/releases) 下载二进制，放到 `PATH` 中：
+从 [Releases](https://github.com/PineWhisperStudio/darkroom/releases) 下载二进制，放到 `PATH` 中：
 
 ```bash
 chmod +x darkroom
 sudo cp darkroom /usr/local/bin/
 ```
 
-### 方式三：.deb 包（Debian/Ubuntu）
+### 方式二：.deb 包（Debian/Ubuntu）
 
 ```bash
-curl -LO https://github.com/boyangso/darkroom/releases/latest/download/darkroom_latest_amd64.deb
-sudo apt install ./darkroom_latest_amd64.deb  # 自动安装 libchafa 依赖
+curl -LO https://github.com/PineWhisperStudio/darkroom/releases/latest/download/darkroom_latest_amd64.deb
+sudo apt install ./darkroom_latest_amd64.deb
+```
+
+### 方式三：Cargo（从 git 安装）
+
+```bash
+cargo install --git https://github.com/PineWhisperStudio/darkroom
 ```
 
 ### 方式四：从源码编译
 
 ```bash
-git clone https://github.com/boyangso/darkroom.git
+git clone https://github.com/PineWhisperStudio/darkroom.git
 cd darkroom
 cargo build --release
 ln -s $(pwd)/target/release/darkroom ~/.local/bin/dr

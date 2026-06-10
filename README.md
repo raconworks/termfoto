@@ -43,7 +43,7 @@
 
 ### System dependency
 
-All methods require `libchafa`:
+Building from source with chafa requires `libchafa-dev`. Prebuilt binaries include chafa statically — **no system deps needed**.
 
 ```bash
 # Debian/Ubuntu
@@ -56,34 +56,34 @@ sudo pacman -S chafa
 brew install chafa
 ```
 
-> 💡 **Don't want chafa?** darkroom can use your terminal's built-in protocols (sixel/kitty) or fall back to halfblocks. Install without chafa: `cargo install darkroom --no-default-features`. Prebuilt binaries include chafa statically — no system deps needed.
+> 💡 **Don't want chafa?** darkroom can use your terminal's built-in protocols (sixel/kitty) or fall back to halfblocks. Install without chafa: `cargo install --git https://github.com/PineWhisperStudio/darkroom --no-default-features`. Prebuilt binaries include chafa statically — no system deps needed.
 
-### Option 1: Cargo (recommended, requires Rust)
+### Option 1: Prebuilt binary (recommended)
 
-```bash
-cargo install darkroom
-```
-
-### Option 2: Prebuilt binary
-
-Download from [Releases](https://github.com/boyangso/darkroom/releases), drop into `PATH`:
+Download from [Releases](https://github.com/PineWhisperStudio/darkroom/releases), drop into `PATH`:
 
 ```bash
 chmod +x darkroom
 sudo cp darkroom /usr/local/bin/
 ```
 
-### Option 3: .deb package (Debian/Ubuntu)
+### Option 2: .deb package (Debian/Ubuntu)
 
 ```bash
-curl -LO https://github.com/boyangso/darkroom/releases/latest/download/darkroom_latest_amd64.deb
-sudo apt install ./darkroom_latest_amd64.deb  # auto-resolves libchafa dependency
+curl -LO https://github.com/PineWhisperStudio/darkroom/releases/latest/download/darkroom_latest_amd64.deb
+sudo apt install ./darkroom_latest_amd64.deb
+```
+
+### Option 3: Cargo (from git)
+
+```bash
+cargo install --git https://github.com/PineWhisperStudio/darkroom
 ```
 
 ### Option 4: Build from source
 
 ```bash
-git clone https://github.com/boyangso/darkroom.git
+git clone https://github.com/PineWhisperStudio/darkroom.git
 cd darkroom
 cargo build --release
 ln -s $(pwd)/target/release/darkroom ~/.local/bin/dr
