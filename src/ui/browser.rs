@@ -34,13 +34,23 @@ fn render_logo(area: Rect, buf: &mut Buffer) {
     let max_w = LOGO_LINES.iter().map(|l| l.chars().count()).max().unwrap_or(0);
     let logo_w = max_w.min(area.width as usize);
     let offset_x = area.x + area.width.saturating_sub(logo_w as u16);
-    // Bottom-align logo within its area
-    let offset_y = area.y + area.height.saturating_sub(LOGO_HEIGHT);
 
     for (i, line) in LOGO_LINES.iter().enumerate() {
         let trimmed: String = line.chars().take(logo_w).collect();
         let style = Style::default().fg(LOGO_COLORS[i]).bg(Color::Black);
-        buf.set_span(offset_x, offset_y + i as u16, &Span::styled(trimmed, style), logo_w as u16);
+        buf.set_span(offset_x, area.y + i as u16, &Span::styled(trimmed, style), logo_w as u16);
+    }
+}
+
+/// Truncate filename to fit cell width, appending "…" if needed.
+fn truncate_filename(name: &str, max_width: u16) -> String {
+    let max = max_width as usize;
+    if name.chars().count() <= max {
+        name.to_string()
+    } else {
+        let mut s: String = name.chars().take(max.saturating_sub(1)).collect();
+        s.push('…');
+        s
     }
 }
 
@@ -60,27 +70,18 @@ impl<'a> Widget for BrowserView<'a> {
         let cell_h = self.cell_h.max(4);
 
         let show_logo = area.width >= MIN_LOGO_WIDTH;
-        let status_height = 1u16;
-        let fixed_bottom = if show_logo { LOGO_HEIGHT + status_height } else { status_height };
-        // Grid uses exactly visible_rows * cell_h — no wasted space
-        let grid_height = ((area.height.saturating_sub(fixed_bottom)) / cell_h) * cell_h;
-        let visible_rows = (grid_height / cell_h) as usize;
-        let grid_area = Rect {
-            height: grid_height,
-            ..area
-        };
-        // Logo absorbs all remaining space between grid and status bar
-        let remaining = area.height.saturating_sub(grid_height + status_height);
-        let logo_area = Rect {
-            y: area.y + grid_height,
-            height: remaining,
-            ..area
-        };
-        let status_area = Rect {
-            y: area.y + grid_height + remaining,
-            height: status_height,
-            ..area
-        };
+        let bottom_h = if show_logo { LOGO_HEIGHT } else { 1 };
+        let available = area.height.saturating_sub(bottom_h);
+
+        // Visible rows and even distribution of remaining space
+        let visible_rows = (available / cell_h) as usize;
+        let grid_height = (visible_rows as u16) * cell_h;
+        let extra_space = available.saturating_sub(grid_height);
+        // Distribute extra space: padding per row (floor)
+        let row_padding = if visible_rows > 0 { extra_space / (visible_rows as u16) } else { 0 };
+        let row_step = cell_h + row_padding;
+        // Center the grid vertically in the available area
+        let grid_top = area.y + (available - ((visible_rows as u16) * row_step)) / 2;
 
         self.app.clamp_scroll(visible_rows);
 
@@ -98,11 +99,11 @@ impl<'a> Widget for BrowserView<'a> {
             let col = (vis_idx % IMAGES_PER_ROW) as u16;
             let row = (vis_idx / IMAGES_PER_ROW) as u16;
 
-            let x = grid_area.x + col * cell_w;
-            let y = grid_area.y + row * cell_h;
+            let x = area.x + col * cell_w;
+            let y = grid_top + row as u16 * row_step;
             let cell_area = Rect { x, y, width: cell_w, height: cell_h };
 
-            if x + cell_w > grid_area.x + grid_area.width || y + cell_h > grid_area.y + grid_area.height {
+            if x + cell_w > area.x + area.width || y + cell_h > area.y + area.height {
                 continue;
             }
 
@@ -122,12 +123,22 @@ impl<'a> Widget for BrowserView<'a> {
             );
         }
 
-        // Logo (right-aligned, below grid)
+        // Logo: bottom-right 6 rows, status bar shares the last row
         if show_logo {
+            let logo_area = Rect {
+                y: area.y + area.height.saturating_sub(LOGO_HEIGHT),
+                height: LOGO_HEIGHT,
+                ..area
+            };
             render_logo(logo_area, buf);
         }
 
-        // Status bar: search bar or normal status
+        // Status bar: bottom row, left-aligned (logo already rendered on right)
+        let status_area = Rect {
+            y: area.y + area.height.saturating_sub(1),
+            height: 1,
+            ..area
+        };
         if let Some(ref search) = self.app.search {
             SearchBar { state: search, lang: self.app.lang }.render(status_area, buf);
         } else {
@@ -190,6 +201,9 @@ fn render_browser_cell(
         return;
     }
 
+    // Truncate filename to fit cell width
+    let name = truncate_filename(filename, inner.width);
+
     let name_height = 1u16;
     let thumb_area = Rect {
         y: inner.y,
@@ -239,7 +253,7 @@ fn render_browser_cell(
     if let Some(query) = search_query {
         if !query.is_empty() {
             render_filename_with_highlight(
-                name_area, buf, filename, query,
+                name_area, buf, &name, query,
                 matched_char_style, normal_style,
             );
             return;
@@ -249,13 +263,13 @@ fn render_browser_cell(
     // No search / empty query: centered single-span filename
     let span: Span;
     if selected {
-        span = Span::styled(filename.to_string(), Style::default().fg(Color::Cyan));
+        span = Span::styled(name.clone(), Style::default().fg(Color::Cyan));
     } else if search_match {
-        span = Span::styled(filename.to_string(), Style::default().fg(Color::Rgb(200, 200, 200)));
+        span = Span::styled(name.clone(), Style::default().fg(Color::Rgb(200, 200, 200)));
     } else {
-        span = Span::styled(filename.to_string(), Style::default().fg(Color::White));
+        span = Span::styled(name.clone(), Style::default().fg(Color::White));
     }
-    let name_width = filename.chars().count() as u16;
+    let name_width = name.chars().count() as u16;
     let name_x = name_area.x + (name_area.width.saturating_sub(name_width)) / 2;
     buf.set_span(name_x, name_area.y, &span, name_width);
 }
