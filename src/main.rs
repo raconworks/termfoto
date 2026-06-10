@@ -1,4 +1,5 @@
 mod app;
+mod lang;
 mod scanner;
 mod ui;
 
