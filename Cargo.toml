@@ -9,7 +9,7 @@ keywords = ["tui", "image", "viewer", "terminal", "chafa"]
 categories = ["command-line-utilities", "multimedia::images"]
 
 [features]
-default = ["chafa"]
+default = []
 chafa = ["ratatui-image/chafa-dyn", "ratatui-image/image-defaults"]
 chafa-static = ["ratatui-image/chafa-static", "ratatui-image/image-defaults"]
 

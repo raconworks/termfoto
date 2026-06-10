@@ -41,22 +41,9 @@
 
 ## 📦 Installation
 
-### System dependency
+**Zero dependencies by default.** darkroom uses your terminal's built-in protocols (sixel/kitty) or halfblocks rendering with no system packages required.
 
-Building from source with chafa requires `libchafa-dev`. Prebuilt binaries include chafa statically — **no system deps needed**.
-
-```bash
-# Debian/Ubuntu
-sudo apt install libchafa-dev
-
-# Arch
-sudo pacman -S chafa
-
-# macOS
-brew install chafa
-```
-
-> 💡 **Don't want chafa?** darkroom can use your terminal's built-in protocols (sixel/kitty) or fall back to halfblocks. Install without chafa: `cargo install --git https://github.com/PineWhisperStudio/darkroom --no-default-features`. Prebuilt binaries include chafa statically — no system deps needed.
+> 💡 **Want even better quality?** Install chafa for superior unicode rendering: `cargo install --git https://github.com/PineWhisperStudio/darkroom --features chafa` (requires `libchafa-dev`). Prebuilt binaries already include chafa statically — download and run, no deps needed.
 
 ### Option 1: Prebuilt binary (recommended)
 

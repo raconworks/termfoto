@@ -145,7 +145,6 @@ use ratatui::{
 
 pub struct SearchBar<'a> {
     pub state: &'a SearchState,
-    pub total: usize,
 }
 
 impl<'a> Widget for SearchBar<'a> {
@@ -225,10 +224,7 @@ mod tests {
     #[test]
     fn test_searchbar_with_no_query() {
         let state = SearchState::new(0, '/');
-        let bar = SearchBar {
-            state: &state,
-            total: 10,
-        };
+        let bar = SearchBar { state: &state };
         let area = Rect {
             x: 0,
             y: 0,

@@ -41,22 +41,9 @@
 
 ## 📦 安装
 
-### 系统依赖
+**默认零依赖。** darkroom 使用终端内置协议（sixel/kitty）或 halfblocks 渲染，无需安装任何系统包。
 
-从源码编译（含 chafa）需要 `libchafa-dev`。预编译二进制已静态链接 chafa——**无需任何系统依赖**。
-
-```bash
-# Debian/Ubuntu
-sudo apt install libchafa-dev
-
-# Arch
-sudo pacman -S chafa
-
-# macOS
-brew install chafa
-```
-
-> 💡 **不想装 chafa？** darkroom 可使用终端内置协议（sixel/kitty）或 halfblocks 渲染。无依赖安装：`cargo install --git https://github.com/PineWhisperStudio/darkroom --no-default-features`。预编译二进制已静态链接 chafa，无需任何系统依赖。
+> 💡 **想要更好的画质？** 安装 chafa 获得更优的 unicode 渲染：`cargo install --git https://github.com/PineWhisperStudio/darkroom --features chafa`（需要 `libchafa-dev`）。预编译二进制已静态链接 chafa——下载即用，无需依赖。
 
 ### 方式一：预编译二进制（推荐）
 

@@ -78,10 +78,7 @@ impl<'a> Widget for BrowserView<'a> {
 
         // Status bar: search bar or normal status
         if let Some(ref search) = self.app.search {
-            SearchBar {
-                state: search,
-                total: self.app.images.len(),
-            }.render(status_area, buf);
+            SearchBar { state: search }.render(status_area, buf);
         } else {
             let selected_name = self
                 .app
