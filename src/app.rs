@@ -279,7 +279,7 @@ pub struct LoadRequest {
     pub size: LoadSize,
 }
 
-/// Spawn a background thread that loads images and creates chafa-encoded Protocols.
+/// Spawn a background thread pool that loads images and creates Protocols in parallel.
 /// Returns (sender, receiver) for App to use.
 pub fn spawn_image_loader(
     picker: Picker,
@@ -287,15 +287,31 @@ pub fn spawn_image_loader(
 ) -> (Sender<LoadRequest>, Receiver<(usize, Protocol)>) {
     let (load_tx, load_rx) = std::sync::mpsc::channel::<LoadRequest>();
     let (done_tx, done_rx) = std::sync::mpsc::channel::<(usize, Protocol)>();
+    let paths = std::sync::Arc::new(paths);
+    let rx = std::sync::Arc::new(std::sync::Mutex::new(load_rx));
 
-    std::thread::spawn(move || {
-        while let Ok(req) = load_rx.recv() {
+    const WORKERS: usize = 4;
+    for _ in 0..WORKERS {
+        let picker = picker.clone();
+        let paths = std::sync::Arc::clone(&paths);
+        let done_tx = done_tx.clone();
+        let rx = std::sync::Arc::clone(&rx);
+
+        std::thread::spawn(move || loop {
+            // Lock only for receiving; release during processing
+            let req = {
+                let rx = rx.lock().unwrap();
+                match rx.recv() {
+                    Ok(req) => req,
+                    Err(_) => return, // Sender dropped, exit worker
+                }
+            };
+
             if let Some(path) = paths.get(req.idx) {
                 if let Ok(img) = image::open(path) {
                     let font_size = picker.font_size();
                     let (img, size, filter) = match req.size {
                         LoadSize::Thumbnail { w, h } => {
-                            // Pre-scale to ~2x target size for fast thumbnail generation
                             let pixel_w = w as u32 * font_size.width as u32 * 2;
                             let pixel_h = h as u32 * font_size.height as u32 * 2;
                             let thumb = img.thumbnail(pixel_w, pixel_h);
@@ -318,8 +334,8 @@ pub fn spawn_image_loader(
                     }
                 }
             }
-        }
-    });
+        });
+    }
 
     (load_tx, done_rx)
 }
