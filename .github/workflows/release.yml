@@ -48,4 +48,3 @@ jobs:
           files: |
             target/release/darkroom
             darkroom_*.deb
-            darkroom_latest_amd64.deb
