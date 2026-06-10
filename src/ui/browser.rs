@@ -7,6 +7,7 @@ use ratatui::{
 };
 use ratatui_image::{protocol::Protocol, Image};
 use crate::app::{App, LoadSize, IMAGES_PER_ROW};
+use crate::ui::search::SearchBar;
 
 pub struct BrowserView<'a> {
     pub app: &'a mut App,
@@ -40,6 +41,12 @@ impl<'a> Widget for BrowserView<'a> {
         let start = self.app.scroll_row * IMAGES_PER_ROW;
         let end = (start + visible_rows * IMAGES_PER_ROW).min(self.app.images.len());
 
+        let search_matches: Option<&[usize]> = self
+            .app
+            .search
+            .as_ref()
+            .map(|s| s.matches.as_slice());
+
         for slot in start..end {
             let vis_idx = slot - start;
             let col = (vis_idx % IMAGES_PER_ROW) as u16;
@@ -54,33 +61,45 @@ impl<'a> Widget for BrowserView<'a> {
             }
 
             let is_selected = slot == self.app.selected;
+            let in_matches = search_matches.map_or(false, |m| m.contains(&slot));
+            let search_query = self.app.search.as_ref().map(|s| s.query.as_str());
+
             render_browser_cell(
                 cell_area,
                 buf,
                 &self.app.images[slot].filename,
                 is_selected,
+                in_matches,
                 &self.app.protocol_cache,
                 slot,
+                search_query,
             );
         }
 
-        // Status bar
-        let selected_name = self
-            .app
-            .images
-            .get(self.app.selected)
-            .map(|e| e.filename.as_str())
-            .unwrap_or("");
-        let info = format!(
-            " {} [{}/{}]  ←→↑↓ 导航  PgUp/PgDown/Space翻页  Home/End首尾  Enter全屏  q退出",
-            selected_name,
-            self.app.selected.saturating_add(1).min(self.app.images.len()),
-            self.app.images.len(),
-        );
-        let span = Span::styled(info, Style::default().fg(Color::White).bg(Color::DarkGray));
-        Paragraph::new(span)
-            .alignment(Alignment::Left)
-            .render(status_area, buf);
+        // Status bar: search bar or normal status
+        if let Some(ref search) = self.app.search {
+            SearchBar {
+                state: search,
+                total: self.app.images.len(),
+            }.render(status_area, buf);
+        } else {
+            let selected_name = self
+                .app
+                .images
+                .get(self.app.selected)
+                .map(|e| e.filename.as_str())
+                .unwrap_or("");
+            let info = format!(
+                " {} [{}/{}]  ←→↑↓ 导航  PgUp/PgDown/Space翻页  Home/End首尾  Enter全屏  q退出",
+                selected_name,
+                self.app.selected.saturating_add(1).min(self.app.images.len()),
+                self.app.images.len(),
+            );
+            let span = Span::styled(info, Style::default().fg(Color::White).bg(Color::DarkGray));
+            Paragraph::new(span)
+                .alignment(Alignment::Left)
+                .render(status_area, buf);
+        }
     }
 }
 
@@ -89,11 +108,21 @@ fn render_browser_cell(
     buf: &mut Buffer,
     filename: &str,
     selected: bool,
+    search_match: bool,
     cache: &std::collections::HashMap<usize, Protocol>,
     slot: usize,
+    search_query: Option<&str>,
 ) {
     let border_style = if selected {
-        Style::default().fg(Color::Cyan)
+        // Both selected and search match: bright yellow
+        if search_match {
+            Style::default().fg(Color::Yellow)
+        } else {
+            Style::default().fg(Color::Cyan)
+        }
+    } else if search_match {
+        // Search match but not selected: dim yellow
+        Style::default().fg(Color::Rgb(128, 128, 0))
     } else {
         Style::default().fg(Color::DarkGray)
     };
@@ -146,28 +175,78 @@ fn render_browser_cell(
         Image::new(proto).allow_clipping(true).render(centered, buf);
     }
 
-    // Render filename centered
-    let max_chars = inner.width as usize;
-    let truncated = if max_chars == 0 {
-        String::new()
+    // Render filename with match highlighting if in search mode
+    let matched_char_style = if selected || search_match {
+        Style::default().fg(Color::Yellow)
     } else {
-        let chars: Vec<char> = filename.chars().collect();
-        if chars.len() <= max_chars {
-            filename.to_string()
-        } else {
-            let truncated: String = chars[..max_chars.saturating_sub(1)].iter().collect();
-            format!("{}…", truncated)
-        }
+        Style::default().fg(Color::Rgb(200, 200, 0))
     };
-
-    let name_style = if selected {
+    let normal_style = if selected {
         Style::default().fg(Color::Cyan)
+    } else if search_match {
+        Style::default().fg(Color::Rgb(200, 200, 200))
     } else {
         Style::default().fg(Color::White)
     };
-    let name_width = truncated.chars().count() as u16;
+
+    if let Some(query) = search_query {
+        if !query.is_empty() {
+            render_filename_with_highlight(
+                name_area, buf, filename, query,
+                matched_char_style, normal_style,
+            );
+            return;
+        }
+    }
+
+    // No search / empty query: centered single-span filename
+    let span: Span;
+    if selected {
+        span = Span::styled(filename.to_string(), Style::default().fg(Color::Cyan));
+    } else if search_match {
+        span = Span::styled(filename.to_string(), Style::default().fg(Color::Rgb(200, 200, 200)));
+    } else {
+        span = Span::styled(filename.to_string(), Style::default().fg(Color::White));
+    }
+    let name_width = filename.chars().count() as u16;
     let name_x = name_area.x + (name_area.width.saturating_sub(name_width)) / 2;
-    buf.set_string(name_x, name_area.y, &truncated, name_style);
+    buf.set_span(name_x, name_area.y, &span, name_width);
+}
+
+/// Render filename with matched characters highlighted in `match_style`.
+fn render_filename_with_highlight(
+    area: Rect,
+    buf: &mut Buffer,
+    filename: &str,
+    query: &str,
+    match_style: Style,
+    normal_style: Style,
+) {
+    let mut spans: Vec<Span> = Vec::new();
+    let filename_lower = filename.to_lowercase();
+    let query_chars: Vec<char> = query.to_lowercase().chars().collect();
+    let mut qi = 0;
+
+    let filename_chars: Vec<char> = filename.chars().collect();
+    let filename_lower_chars: Vec<char> = filename_lower.chars().collect();
+
+    for (i, ch) in filename_chars.iter().enumerate() {
+        if qi < query_chars.len() && filename_lower_chars[i] == query_chars[qi] {
+            spans.push(Span::styled(ch.to_string(), match_style));
+            qi += 1;
+        } else {
+            spans.push(Span::styled(ch.to_string(), normal_style));
+        }
+    }
+
+    let total_width: usize = spans.iter().map(|s| s.width()).sum();
+    let start_x = area.x + area.width.saturating_sub(total_width as u16) / 2;
+    let mut x = start_x;
+    for span in &spans {
+        let w = span.width() as u16;
+        buf.set_span(x, area.y, span, w);
+        x += w;
+    }
 }
 
 /// Request chafa protocol generation for visible images + prefetch adjacent rows.
