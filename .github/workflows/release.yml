@@ -38,6 +38,7 @@ jobs:
           Description: 终端图片浏览器——高效、轻量、chafa 渲染
           EOF
           dpkg-deb --build "${PKG}"
+          cp "${PKG}.deb" darkroom_latest_amd64.deb
         env:
           GITHUB_REF_NAME: ${{ github.ref_name }}
 
@@ -47,3 +48,4 @@ jobs:
           files: |
             target/release/darkroom
             darkroom_*.deb
+            darkroom_latest_amd64.deb
