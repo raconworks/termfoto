@@ -237,9 +237,16 @@ impl App {
         false
     }
 
-    fn handle_search_key(&mut self, code: KeyCode, modifiers: KeyModifiers) -> bool {
+    fn handle_search_key(&mut self, code: KeyCode, _modifiers: KeyModifiers) -> bool {
+        // Enter in search mode: open fullscreen for current match
+        if code == KeyCode::Enter {
+            self.search = None;
+            self.enter_fullscreen();
+            return false;
+        }
+
         let search = self.search.as_mut().unwrap();
-        match search.handle_key(code, modifiers, &self.images) {
+        match search.handle_key(code, _modifiers, &self.images) {
             SearchAction::JumpTo(idx) => {
                 self.selected = idx;
                 self.clamp_scroll(self.visible_rows.max(1));

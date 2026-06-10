@@ -41,16 +41,17 @@ impl SearchState {
                 self.jump_to_best()
             }
             KeyCode::Tab => {
-                if modifiers.contains(KeyModifiers::SHIFT) {
-                    if !self.matches.is_empty() {
-                        let n = self.matches.len();
-                        self.match_idx = (self.match_idx + n - 1) % n;
-                        SearchAction::JumpTo(self.matches[self.match_idx])
-                    } else {
-                        SearchAction::Continue
-                    }
-                } else if !self.matches.is_empty() {
+                if !self.matches.is_empty() {
                     self.match_idx = (self.match_idx + 1) % self.matches.len();
+                    SearchAction::JumpTo(self.matches[self.match_idx])
+                } else {
+                    SearchAction::Continue
+                }
+            }
+            KeyCode::BackTab => {
+                if !self.matches.is_empty() {
+                    let n = self.matches.len();
+                    self.match_idx = (self.match_idx + n - 1) % n;
                     SearchAction::JumpTo(self.matches[self.match_idx])
                 } else {
                     SearchAction::Continue
@@ -167,13 +168,13 @@ impl<'a> Widget for SearchBar<'a> {
 
         let hint = if total_matches > 0 {
             format!(
-                " [{}/{} matches]  Tab/Shift+Tab切换  Esc取消",
+                " [{}/{} matches]  Tab/Shift+Tab切换  Enter全屏  Esc取消",
                 current, total_matches
             )
         } else if query.is_empty() {
-            " Tab/Shift+Tab切换  Esc取消".to_string()
+            " Tab/Shift+Tab切换  Enter全屏  Esc取消".to_string()
         } else {
-            " [0/0]  Tab/Shift+Tab切换  Esc取消".to_string()
+            " [0/0]  Tab/Shift+Tab切换  Enter全屏  Esc取消".to_string()
         };
 
         let query_style = if total_matches == 0 && !query.is_empty() {
@@ -312,7 +313,7 @@ mod tests {
         s.handle_key(KeyCode::Char('a'), KeyModifiers::NONE, &images);
         let n = s.matches.len();
         let first = s.match_idx;
-        let action = s.handle_key(KeyCode::Tab, KeyModifiers::SHIFT, &images);
+        let action = s.handle_key(KeyCode::BackTab, KeyModifiers::NONE, &images);
         assert!(matches!(action, SearchAction::JumpTo(_)));
         assert_eq!(s.match_idx, (first + n - 1) % n);
     }

@@ -87,7 +87,7 @@ impl<'a> Widget for BrowserView<'a> {
                 .map(|e| e.filename.as_str())
                 .unwrap_or("");
             let info = format!(
-                " {} [{}/{}]  ←→↑↓ 导航  PgUp/PgDown/Space翻页  Home/End首尾  Enter全屏  q退出",
+                " {} [{}/{}]  ←→↑↓ 导航  PgUp/PgDown/Space翻页  Home/End首尾  Enter全屏  /搜索  q退出",
                 selected_name,
                 self.app.selected.saturating_add(1).min(self.app.images.len()),
                 self.app.images.len(),
