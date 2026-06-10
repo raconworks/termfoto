@@ -34,14 +34,13 @@ fn render_logo(area: Rect, buf: &mut Buffer) {
     let max_w = LOGO_LINES.iter().map(|l| l.chars().count()).max().unwrap_or(0);
     let logo_w = max_w.min(area.width as usize);
     let offset_x = area.x + area.width.saturating_sub(logo_w as u16);
+    // Bottom-align logo within its area
+    let offset_y = area.y + area.height.saturating_sub(LOGO_HEIGHT);
 
     for (i, line) in LOGO_LINES.iter().enumerate() {
-        if i as u16 >= area.height {
-            break;
-        }
         let trimmed: String = line.chars().take(logo_w).collect();
         let style = Style::default().fg(LOGO_COLORS[i]).bg(Color::Black);
-        buf.set_span(offset_x, area.y + i as u16, &Span::styled(trimmed, style), logo_w as u16);
+        buf.set_span(offset_x, offset_y + i as u16, &Span::styled(trimmed, style), logo_w as u16);
     }
 }
 
@@ -57,27 +56,31 @@ impl<'a> Widget for BrowserView<'a> {
             return;
         }
 
+        let cell_w = self.cell_w.max(1);
+        let cell_h = self.cell_h.max(4);
+
         let show_logo = area.width >= MIN_LOGO_WIDTH;
-        let logo_height = if show_logo { LOGO_HEIGHT } else { 0 };
         let status_height = 1u16;
+        let fixed_bottom = if show_logo { LOGO_HEIGHT + status_height } else { status_height };
+        // Grid uses exactly visible_rows * cell_h — no wasted space
+        let grid_height = ((area.height.saturating_sub(fixed_bottom)) / cell_h) * cell_h;
+        let visible_rows = (grid_height / cell_h) as usize;
         let grid_area = Rect {
-            height: area.height.saturating_sub(logo_height + status_height),
+            height: grid_height,
             ..area
         };
+        // Logo absorbs all remaining space between grid and status bar
+        let remaining = area.height.saturating_sub(grid_height + status_height);
         let logo_area = Rect {
-            y: area.y + grid_area.height,
-            height: logo_height,
+            y: area.y + grid_height,
+            height: remaining,
             ..area
         };
         let status_area = Rect {
-            y: area.y + grid_area.height + logo_height,
+            y: area.y + grid_height + remaining,
             height: status_height,
             ..area
         };
-
-        let cell_w = self.cell_w.max(1);
-        let cell_h = self.cell_h.max(4);
-        let visible_rows = (grid_area.height / cell_h) as usize;
 
         self.app.clamp_scroll(visible_rows);
 
