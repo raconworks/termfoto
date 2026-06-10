@@ -11,12 +11,12 @@ pub fn draw(
     frame: &mut Frame,
     app: &mut App,
     cell_w: u16,
-    cell_h: u16,
+    _cell_h: u16,
 ) {
     let area = frame.area();
     match app.state {
         AppState::Browser => {
-            frame.render_widget(BrowserView { app, cell_w, cell_h }, area);
+            frame.render_widget(BrowserView { app, cell_w }, area);
         }
         AppState::Fullscreen => {
             frame.render_widget(PreviewView { app }, area);

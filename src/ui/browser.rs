@@ -54,7 +54,6 @@ fn truncate_filename(name: &str, max_width: u16) -> String {
 pub struct BrowserView<'a> {
     pub app: &'a mut App,
     pub cell_w: u16,
-    pub cell_h: u16,
 }
 
 impl<'a> Widget for BrowserView<'a> {
@@ -63,22 +62,16 @@ impl<'a> Widget for BrowserView<'a> {
             return;
         }
 
-        let cell_w = self.cell_w.max(1);
-        let cell_h = self.cell_h.max(4);
+        let cell = self.cell_w.max(1);
 
         let show_logo = area.width >= MIN_LOGO_WIDTH;
         let bottom_h = if show_logo { LOGO_HEIGHT } else { 1 };
         let available = area.height.saturating_sub(bottom_h);
 
-        // Visible rows and even distribution of remaining space
-        let visible_rows = (available / cell_h) as usize;
-        let grid_height = (visible_rows as u16) * cell_h;
-        let extra_space = available.saturating_sub(grid_height);
-        // Distribute extra space: padding per row (floor)
-        let row_padding = if visible_rows > 0 { extra_space / (visible_rows as u16) } else { 0 };
-        let row_step = cell_h + row_padding;
-        // Center the grid vertically in the available area
-        let grid_top = area.y + (available - ((visible_rows as u16) * row_step)) / 2;
+        // Square cells: grid centered both horizontally and vertically
+        let visible_rows = (available / cell) as usize;
+        let grid_height = (visible_rows as u16) * cell;
+        let grid_top = area.y + (available.saturating_sub(grid_height)) / 2;
 
         self.app.clamp_scroll(visible_rows);
 
@@ -86,7 +79,7 @@ impl<'a> Widget for BrowserView<'a> {
         let end = (start + visible_rows * self.app.grid_cols).min(self.app.images.len());
 
         // Center the grid horizontally
-        let grid_w = self.app.grid_cols as u16 * cell_w;
+        let grid_w = self.app.grid_cols as u16 * cell;
         let grid_x = area.x + (area.width.saturating_sub(grid_w)) / 2;
 
         let search_matches: Option<&[usize]> = self
@@ -100,11 +93,11 @@ impl<'a> Widget for BrowserView<'a> {
             let col = (vis_idx % self.app.grid_cols) as u16;
             let row = (vis_idx / self.app.grid_cols) as u16;
 
-            let x = grid_x + col * cell_w;
-            let y = grid_top + row as u16 * row_step;
-            let cell_area = Rect { x, y, width: cell_w, height: cell_h };
+            let x = grid_x + col * cell;
+            let y = grid_top + row as u16 * cell;
+            let cell_area = Rect { x, y, width: cell, height: cell };
 
-            if x + cell_w > area.x + area.width || y + cell_h > area.y + area.height {
+            if x + cell > area.x + area.width || y + cell > area.y + area.height {
                 continue;
             }
 

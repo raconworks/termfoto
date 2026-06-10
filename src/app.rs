@@ -40,8 +40,7 @@ pub struct App {
     load_rx: Receiver<(usize, Protocol)>,
 }
 
-pub const MIN_CELL_W: u16 = 12;
-pub const MIN_CELL_H: u16 = 8;
+pub const MIN_CELL: u16 = 24;
 pub const LOGO_HEIGHT: u16 = 6;
 pub const MIN_LOGO_WIDTH: u16 = 70;
 const MAX_CACHE_SIZE: usize = 200;

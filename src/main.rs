@@ -37,7 +37,7 @@ use crossterm::{
 use ratatui::{backend::CrosstermBackend, Terminal};
 use ratatui_image::picker::Picker;
 
-use app::{spawn_image_loader, App, AppState, LOGO_HEIGHT, MIN_CELL_H, MIN_CELL_W, MIN_LOGO_WIDTH};
+use app::{spawn_image_loader, App, AppState, LOGO_HEIGHT, MIN_CELL, MIN_LOGO_WIDTH};
 use lang::Lang;
 use scanner::scan_directory;
 use ui::browser::populate_protocol_cache;
@@ -97,26 +97,28 @@ fn run(
 
     loop {
         let size = terminal.size()?;
-        // Dynamic grid: cols/rows fill the space, no gaps
+        // Dynamic grid: square cells, cols/rows fill the space
         let logo_h = if size.width >= MIN_LOGO_WIDTH { LOGO_HEIGHT } else { 0 };
         let avail_h = size.height.saturating_sub(logo_h + 1); // +1 status bar
-        let cols = (size.width / MIN_CELL_W).max(2) as usize;
-        let rows = (avail_h / MIN_CELL_H).max(1) as usize;
+        let cols = (size.width / MIN_CELL).max(2) as usize;
+        let rows = (avail_h / MIN_CELL).max(1) as usize;
+        // Square cells: use the smaller dimension so cells stay square
         let cell_w = size.width / cols as u16;
         let cell_h = avail_h / rows as u16;
+        let cell = cell_w.min(cell_h);
 
         app.grid_cols = cols;
         app.visible_rows = rows;
 
         if app.state == AppState::Browser {
-            populate_protocol_cache(&mut app, cell_w, cell_h, size);
+            populate_protocol_cache(&mut app, cell, cell, size);
         }
 
         // Check for completed background image loads
         app.collect_loads();
 
         // Render
-        terminal.draw(|f| ui::draw(f, &mut app, cell_w, cell_h))?;
+        terminal.draw(|f| ui::draw(f, &mut app, cell, cell))?;
 
         if event::poll(Duration::from_millis(50))? {
             if let Event::Key(key) = event::read()? {
