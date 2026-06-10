@@ -133,6 +133,70 @@ fn fuzzy_score(text: &str, query: &str) -> Option<i32> {
     }
 }
 
+// ---- SearchBar widget ----
+
+use ratatui::{
+    buffer::Buffer,
+    layout::{Alignment, Rect},
+    style::{Color, Style},
+    text::Span,
+    widgets::{Paragraph, Widget},
+};
+
+pub struct SearchBar<'a> {
+    pub state: &'a SearchState,
+    pub total: usize,
+}
+
+impl<'a> Widget for SearchBar<'a> {
+    fn render(self, area: Rect, buf: &mut Buffer) {
+        if area.height == 0 {
+            return;
+        }
+
+        let prompt = self.state.trigger_char;
+        let query = &self.state.query;
+        let total_matches = self.state.matches.len();
+        let current = if total_matches > 0 {
+            self.state.match_idx + 1
+        } else {
+            0
+        };
+
+        let cursor = "█";
+        let display_query = format!("{}{}{}", prompt, query, cursor);
+
+        let hint = if total_matches > 0 {
+            format!(
+                " [{}/{} matches]  Tab/Shift+Tab切换  Esc取消",
+                current, total_matches
+            )
+        } else if query.is_empty() {
+            " Tab/Shift+Tab切换  Esc取消".to_string()
+        } else {
+            " [0/0]  Tab/Shift+Tab切换  Esc取消".to_string()
+        };
+
+        let query_style = if total_matches == 0 && !query.is_empty() {
+            Style::default().fg(Color::Red).bg(Color::DarkGray)
+        } else {
+            Style::default().fg(Color::White).bg(Color::DarkGray)
+        };
+
+        let hint_style = Style::default().fg(Color::Gray).bg(Color::DarkGray);
+
+        let mut spans = Vec::new();
+        spans.push(Span::styled(display_query, query_style));
+        spans.push(Span::styled(hint, hint_style));
+
+        Paragraph::new(ratatui::text::Line::from(spans))
+            .alignment(Alignment::Left)
+            .render(area, buf);
+    }
+}
+
+// ---- Tests ----
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -146,6 +210,42 @@ mod tests {
                 filename: name.to_string(),
             })
             .collect()
+    }
+
+    fn cell_text(buf: &Buffer, area: Rect) -> String {
+        let mut s = String::new();
+        for x in area.x..area.x + area.width {
+            if let Some(cell) = buf.cell((x, area.y)) {
+                s.push_str(&cell.symbol());
+            }
+        }
+        s.trim_end().to_string()
+    }
+
+    #[test]
+    fn test_searchbar_with_no_query() {
+        let state = SearchState::new(0, '/');
+        let bar = SearchBar {
+            state: &state,
+            total: 10,
+        };
+        let area = Rect {
+            x: 0,
+            y: 0,
+            width: 80,
+            height: 1,
+        };
+        let mut buf = Buffer::empty(area);
+        bar.render(area, &mut buf);
+        let content = cell_text(&buf, area);
+        assert!(
+            content.starts_with('/'),
+            "expected leading '/', got: {content:?}"
+        );
+        assert!(
+            content.contains("Esc"),
+            "expected Esc hint, got: {content:?}"
+        );
     }
 
     #[test]
