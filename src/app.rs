@@ -292,19 +292,27 @@ pub fn spawn_image_loader(
         while let Ok(req) = load_rx.recv() {
             if let Some(path) = paths.get(req.idx) {
                 if let Ok(img) = image::open(path) {
-                    let size = match req.size {
-                        LoadSize::Thumbnail { w, h } => Size::new(w, h),
+                    let font_size = picker.font_size();
+                    let (img, size, filter) = match req.size {
+                        LoadSize::Thumbnail { w, h } => {
+                            // Pre-scale to ~2x target size for fast thumbnail generation
+                            let pixel_w = w as u32 * font_size.width as u32 * 2;
+                            let pixel_h = h as u32 * font_size.height as u32 * 2;
+                            let thumb = img.thumbnail(pixel_w, pixel_h);
+                            let size = Size::new(w, h);
+                            (thumb, size, FilterType::Nearest)
+                        }
                         LoadSize::Original => {
-                            let font_size = picker.font_size();
                             let nat_w = img.width().div_ceil(font_size.width as u32) as u16;
                             let nat_h = img.height().div_ceil(font_size.height as u32) as u16;
-                            Size::new(nat_w.max(1), nat_h.max(1))
+                            let size = Size::new(nat_w.max(1), nat_h.max(1));
+                            (img, size, FilterType::Lanczos3)
                         }
                     };
                     if let Ok(proto) = picker.new_protocol(
                         img,
                         size,
-                        Resize::Fit(Some(FilterType::Lanczos3)),
+                        Resize::Fit(Some(filter)),
                     ) {
                         let _ = done_tx.send((req.idx, proto));
                     }
