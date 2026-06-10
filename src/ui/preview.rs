@@ -46,7 +46,7 @@ impl<'a> Widget for PreviewView<'a> {
         };
 
         // 3:1 split: image (left 75%) + info panel (right 25%)
-        let info_w = (main_area.width / 4).max(20).min(35);
+        let info_w = (main_area.width / 4).max(20);
         let image_w = main_area.width.saturating_sub(info_w);
         let image_area = Rect { width: image_w, ..main_area };
         let info_area = Rect {
