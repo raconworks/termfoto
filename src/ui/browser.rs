@@ -265,6 +265,8 @@ pub fn populate_protocol_cache(
 
     let thumb_w = cell_w.saturating_sub(2);
     let thumb_h = cell_h.saturating_sub(3); // minus border + filename row
+    app.thumb_w = thumb_w;
+    app.thumb_h = thumb_h;
     let size = LoadSize::Thumbnail { w: thumb_w, h: thumb_h };
 
     let start = app.scroll_row * IMAGES_PER_ROW;

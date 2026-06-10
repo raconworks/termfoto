@@ -28,6 +28,8 @@ pub struct App {
     pub fullscreen_protocol: Option<Protocol>,
     pub fullscreen_pending: bool,
     pub cache_width: u16,
+    pub thumb_w: u16,
+    pub thumb_h: u16,
     pub visible_rows: usize,
     pub requested: HashSet<usize>,
     pub search: Option<SearchState>,
@@ -57,6 +59,8 @@ impl App {
             fullscreen_protocol: None,
             fullscreen_pending: false,
             cache_width: 0,
+            thumb_w: 0,
+            thumb_h: 0,
             visible_rows: 1,
             requested: HashSet::new(),
             search: None,
@@ -160,6 +164,11 @@ impl App {
                 self.fullscreen_protocol = Some(proto);
                 self.fullscreen_pending = false;
             } else {
+                // Discard protocols from stale requests (terminal was resized after request)
+                let psize = proto.size();
+                if self.thumb_w > 0 && (psize.width != self.thumb_w || psize.height != self.thumb_h) {
+                    continue;
+                }
                 self.insert_cache(idx, proto);
             }
         }
