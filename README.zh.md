@@ -2,23 +2,15 @@
 
 # termfoto
 
-> 快速轻量的终端图片浏览器——像专业人士一样看图。
+> 像终端一样快地浏览图片。
 
-[![build](https://img.shields.io/badge/build-passing-brightgreen)](https://github.com)
-[![version](https://img.shields.io/badge/version-0.1.0-blue)](Cargo.toml)
+[![CI](https://github.com/PineWhisperStudio/termfoto/actions/workflows/ci.yml/badge.svg)](https://github.com/PineWhisperStudio/termfoto/actions/workflows/ci.yml)
+[![crates.io](https://img.shields.io/crates/v/termfoto?label=crates.io)](https://crates.io/crates/termfoto)
+[![downloads](https://img.shields.io/crates/d/termfoto?label=downloads)](https://crates.io/crates/termfoto)
 [![license](https://img.shields.io/badge/license-MIT-green)](LICENSE)
-[![rust](https://img.shields.io/badge/rust-stable-orange)](https://rust-lang.org)
 
-```
-  ╭─────────────────────────────────────────────────╮
-  │  🖼  img_0001.png  🖼  img_0002.png  ...        │
-  │                                                 │
-  │  8 列 chafa 缩略图 · vim 式导航                  │
-  │  回车全屏 · 原图尺寸 · 零阻塞                    │
-  │                                                 │
-  │  photo_0042.png [42/156]  ←→↑↓ 导航  ...        │
-  ╰─────────────────────────────────────────────────╯
-```
+<!-- TODO: 替换为实际 asciinema 链接 -->
+[![asciicast](https://asciinema.org/a/PLACEHOLDER.svg)](https://asciinema.org/a/PLACEHOLDER)
 
 ## ✨ 特性
 
@@ -38,6 +30,14 @@
 - **主线程永不阻塞** — 所有 I/O 和编码都在后台线程执行
 - **终端原生体验** — 就像 `ls` 或 `vim`，启动瞬间，操作即时
 - **功能克制** — 每考虑一个新功能，先问"它会让浏览变慢吗？"
+
+## 🤔 为什么不用其他工具？
+
+| 工具 | 定位 | termfoto 差异 |
+|------|------|-------------|
+| [`viu`](https://github.com/atanunq/viu) | 单图预览 | 目录浏览 + 键盘导航 + 全屏 |
+| [`timg`](https://github.com/hzeller/timg) | 图片/视频播放 | 专注图片，启动更快更轻 |
+| [`ranger`](https://github.com/ranger/ranger) / [`lf`](https://github.com/gokcehan/lf) | 文件管理器 | 图片优先，交互浏览 |
 
 ## 📦 安装
 
@@ -73,7 +73,7 @@ sudo apt install ./termfoto_latest_amd64.deb
 git clone https://github.com/PineWhisperStudio/termfoto.git
 cd termfoto
 cargo build --release
-ln -s $(pwd)/target/release/termfoto ~/.local/bin/dr
+ln -s $(pwd)/target/release/termfoto ~/.local/bin/termfoto
 ```
 
 ### 创建别名
@@ -89,6 +89,8 @@ alias dr='termfoto'
 termfoto                 # 浏览当前目录
 termfoto ~/图片           # 浏览指定目录
 termfoto photo.jpg       # 直接打开单张图片（全屏模式）
+termfoto --help          # 显示所有选项
+termfoto --version       # 显示版本号
 ```
 
 ## ⌨ 快捷键
@@ -96,15 +98,19 @@ termfoto photo.jpg       # 直接打开单张图片（全屏模式）
 | 模式 | 按键 | 功能 |
 |------|------|------|
 | 浏览器 | `←` `→` `↑` `↓` | 导航 |
-| 浏览器 | `Space` `PgUp` `PgDn` | 翻页 |
-| 浏览器 | `Home` `End` | 跳到首/尾 |
+| 浏览器 | `Space` · `PgDn` | 下翻页 |
+| 浏览器 | `PgUp` | 上翻页 |
+| 浏览器 | `Home` · `End` | 跳到首/尾 |
 | 浏览器 | `Enter` | 全屏查看 |
-| 浏览器 | `/` `\` | 搜索文件名 |
-| 浏览器 | `L` | 切换语言 |
-| 浏览器 | `q` `Ctrl+C` | 退出 |
-| 全屏 | `←` `→` | 切换图片 |
-| 全屏 | `L` | 切换语言 |
-| 全屏 | `Enter` `Esc` `q` | 返回浏览器 |
+| 浏览器 | `/` · `\` | 搜索文件名 |
+| 浏览器 | `L` | 切换中/英文 |
+| 浏览器 | `q` · `Ctrl+C` | 退出 |
+| 搜索 | `Esc` | 取消搜索 |
+| 搜索 | `Tab` · `Shift+Tab` | 上/下一个结果 |
+| 搜索 | `Enter` | 全屏当前结果 |
+| 全屏 | `←` `→` | 上/下一张 |
+| 全屏 | `L` | 切换中/英文 |
+| 全屏 | `Enter` · `Esc` · `q` | 返回浏览器 |
 | 全屏 | `Ctrl+C` | 退出 |
 
 ## 🔧 技术栈
@@ -114,7 +120,20 @@ termfoto photo.jpg       # 直接打开单张图片（全屏模式）
 | [ratatui](https://ratatui.rs) | TUI 框架 |
 | [ratatui-image](https://github.com/ratatui/ratatui-image) + [chafa](https://hpjansson.org/chafa/) | 图片 → Unicode 字符渲染 |
 | [image](https://github.com/image-rs/image) | 图片解码（PNG/JPEG/WebP） |
-| [clap](https://github.com/clap-rs/clap) | CLI 参数解析 |
+
+## 🌟 喜欢 termfoto？
+
+- ⭐ **给个 Star** — 让更多人发现它
+- 🐛 **报告 Bug** — [GitHub Issues](https://github.com/PineWhisperStudio/termfoto/issues)
+- 💡 **建议新功能** — 先问自己：*"它会让浏览变慢吗？"*
+
+---
+
+📦 **也可在** [crates.io](https://crates.io/crates/termfoto) · [GitHub Releases](https://github.com/PineWhisperStudio/termfoto/releases) 获取
+
+---
+
+用 ❤️ 由 [PineWhisperStudio](https://github.com/PineWhisperStudio) 打造
 
 ## 📜 许可证
 
