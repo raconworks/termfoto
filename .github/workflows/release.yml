@@ -20,6 +20,12 @@ jobs:
           sudo apt-get update -qq
           sudo apt-get install -y libchafa-dev libglib2.0-dev libsysprof-capture-4-dev
 
+      - name: 从 tag 同步版本号
+        run: |
+          TAG_VERSION="${GITHUB_REF_NAME#v}"
+          sed -i "s/^version = .*/version = \"${TAG_VERSION}\"/" Cargo.toml
+          echo "Synced Cargo.toml version to ${TAG_VERSION}"
+
       - name: 编译 release
         run: cargo build --release --no-default-features --features chafa-static
 
