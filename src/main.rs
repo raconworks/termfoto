@@ -43,7 +43,22 @@ use scanner::scan_directory;
 use ui::browser::populate_protocol_cache;
 
 fn main() -> Result<()> {
-    let path = std::env::args().nth(1).map(PathBuf::from);
+    let arg1 = std::env::args().nth(1);
+
+    // Handle --help / --version before doing any I/O
+    match arg1.as_deref() {
+        Some("-h") | Some("--help") => {
+            print_help();
+            std::process::exit(0);
+        }
+        Some("-V") | Some("--version") => {
+            println!("termfoto {}", env!("CARGO_PKG_VERSION"));
+            std::process::exit(0);
+        }
+        _ => {}
+    }
+
+    let path = arg1.map(PathBuf::from);
 
     let (images, initial_state) = match path {
         None => {
@@ -82,6 +97,15 @@ fn main() -> Result<()> {
     let mut terminal = Terminal::new(backend)?;
 
     run(&mut terminal, images, initial_state)
+}
+
+fn print_help() {
+    println!("termfoto — 终端图片浏览器\n");
+    println!("用法: termfoto [路径]\n");
+    println!("  <路径>    图片文件或目录（默认当前目录）\n");
+    println!("选项:");
+    println!("  -h, --help        显示此帮助");
+    println!("  -V, --version     显示版本号");
 }
 
 fn run(
