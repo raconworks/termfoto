@@ -100,12 +100,12 @@ fn main() -> Result<()> {
 }
 
 fn print_help() {
-    println!("termfoto — 终端图片浏览器\n");
-    println!("用法: termfoto [路径]\n");
-    println!("  <路径>    图片文件或目录（默认当前目录）\n");
-    println!("选项:");
-    println!("  -h, --help        显示此帮助");
-    println!("  -V, --version     显示版本号");
+    println!("termfoto — fast terminal photo viewer\n");
+    println!("Usage: termfoto [PATH]\n");
+    println!("  <PATH>    image file or directory (default: current directory)\n");
+    println!("Options:");
+    println!("  -h, --help        show this help");
+    println!("  -V, --version     show version");
 }
 
 fn run(
