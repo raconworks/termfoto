@@ -2,30 +2,22 @@
 
 # termfoto
 
-> Fast, lightweight terminal photo viewer — browse images like a pro.
+> Browse images at the speed of your terminal.
 
-[![build](https://img.shields.io/badge/build-passing-brightgreen)](https://github.com)
-[![version](https://img.shields.io/badge/version-0.1.0-blue)](Cargo.toml)
+[![CI](https://github.com/PineWhisperStudio/termfoto/actions/workflows/ci.yml/badge.svg)](https://github.com/PineWhisperStudio/termfoto/actions/workflows/ci.yml)
+[![crates.io](https://img.shields.io/crates/v/termfoto?label=crates.io)](https://crates.io/crates/termfoto)
+[![downloads](https://img.shields.io/crates/d/termfoto?label=downloads)](https://crates.io/crates/termfoto)
 [![license](https://img.shields.io/badge/license-MIT-green)](LICENSE)
-[![rust](https://img.shields.io/badge/rust-stable-orange)](https://rust-lang.org)
 
-```
-  ╭─────────────────────────────────────────────────╮
-  │  🖼  img_0001.png  🖼  img_0002.png  ...        │
-  │                                                 │
-  │  8-column chafa thumbnails · vim-style nav      │
-  │  Enter fullscreen · original size · zero-block  │
-  │                                                 │
-  │  photo_0042.png [42/156]  ←→↑↓ navigate  ...   │
-  ╰─────────────────────────────────────────────────╯
-```
+<!-- TODO: 替换为实际 asciinema 链接 -->
+[![asciicast](https://asciinema.org/a/PLACEHOLDER.svg)](https://asciinema.org/a/PLACEHOLDER)
 
 ## ✨ Features
 
 | | |
 |---|---|
 | 🎨 **High-quality chafa rendering** | Unicode chars + true color half-blocks — a magnitude sharper than sixel |
-| ⚡ **Non-blocking async loading** | Image decoding & chafa encoding run on background thread — zero UI jank |
+| ⚡ **Non-blocking async loading** | Image decoding & chafa encoding run on background threads — zero UI jank |
 | 🖼 **Original-size fullscreen** | No scaling, no distortion — pixel-accurate, centered display |
 | ⌨ **Keyboard-only navigation** | Vim-style bindings — keep your hands where they matter |
 | 🪶 **Extremely lightweight** | No GUI framework — only 4 core dependencies |
@@ -38,6 +30,14 @@
 - **Main thread never blocks** — all I/O and encoding run on background threads
 - **Terminal-native experience** — like `ls` or `vim`: launches instantly, responds immediately
 - **Ruthlessly minimal** — before adding a feature, ask: "will it make browsing slower?"
+
+## 🤔 Why not other tools?
+
+| Tool | For | termfoto instead |
+|------|-----|-----------------|
+| [`viu`](https://github.com/atanunq/viu) | Single image preview | Directory browsing + keyboard nav + fullscreen |
+| [`timg`](https://github.com/hzeller/timg) | Image/video playback | Focused on images, faster startup, lighter |
+| [`ranger`](https://github.com/ranger/ranger) / [`lf`](https://github.com/gokcehan/lf) | File manager | Image-first, interactive browsing |
 
 ## 📦 Installation
 
@@ -73,7 +73,7 @@ sudo apt install ./termfoto_latest_amd64.deb
 git clone https://github.com/PineWhisperStudio/termfoto.git
 cd termfoto
 cargo build --release
-ln -s $(pwd)/target/release/termfoto ~/.local/bin/dr
+ln -s $(pwd)/target/release/termfoto ~/.local/bin/termfoto
 ```
 
 ### Optional alias
@@ -89,6 +89,8 @@ alias dr='termfoto'
 termfoto                 # browse current directory
 termfoto ~/Pictures      # browse a directory
 termfoto photo.jpg       # open a single image (fullscreen mode)
+termfoto --help          # show all options
+termfoto --version       # print version
 ```
 
 ## ⌨ Keybindings
@@ -96,15 +98,19 @@ termfoto photo.jpg       # open a single image (fullscreen mode)
 | Mode | Key | Action |
 |------|-----|--------|
 | Browser | `←` `→` `↑` `↓` | Navigate |
-| Browser | `Space` `PgUp` `PgDn` | Page up/down |
-| Browser | `Home` `End` | Jump to first/last |
-| Browser | `Enter` | View fullscreen |
-| Browser | `/` `\` | Search filenames |
-| Browser | `L` | Toggle language |
-| Browser | `q` `Ctrl+C` | Quit |
-| Fullscreen | `←` `→` | Previous/next image |
-| Fullscreen | `L` | Toggle language |
-| Fullscreen | `Enter` `Esc` `q` | Back to browser |
+| Browser | `Space` · `PgDn` | Page down |
+| Browser | `PgUp` | Page up |
+| Browser | `Home` · `End` | Jump first/last |
+| Browser | `Enter` | Fullscreen |
+| Browser | `/` · `\` | Search filenames |
+| Browser | `L` | Toggle EN/中文 |
+| Browser | `q` · `Ctrl+C` | Quit |
+| Search | `Esc` | Cancel search |
+| Search | `Tab` · `Shift+Tab` | Next/prev match |
+| Search | `Enter` | Fullscreen match |
+| Fullscreen | `←` `→` | Prev/next image |
+| Fullscreen | `L` | Toggle EN/中文 |
+| Fullscreen | `Enter` · `Esc` · `q` | Back to browser |
 | Fullscreen | `Ctrl+C` | Quit |
 
 ## 🔧 Tech Stack
@@ -113,8 +119,21 @@ termfoto photo.jpg       # open a single image (fullscreen mode)
 |------------|---------|
 | [ratatui](https://ratatui.rs) | TUI framework |
 | [ratatui-image](https://github.com/ratatui/ratatui-image) + [chafa](https://hpjansson.org/chafa/) | Image → Unicode character rendering |
-| [image](https://github.com/image-rs/image) | Image decoding (PNG/JPEG/WebP/GIF/BMP/TIFF/ICO) |
-| [clap](https://github.com/clap-rs/clap) | CLI argument parsing |
+| [image](https://github.com/image-rs/image) | Image decoding (PNG/JPEG/WebP) |
+
+## 🌟 Like termfoto?
+
+- ⭐ **Star this repo** — helps others discover it
+- 🐛 **Report bugs** — [GitHub Issues](https://github.com/PineWhisperStudio/termfoto/issues)
+- 💡 **Suggest features** — before requesting, ask: *"will it make browsing slower?"*
+
+---
+
+📦 **Also available on** [crates.io](https://crates.io/crates/termfoto) · [GitHub Releases](https://github.com/PineWhisperStudio/termfoto/releases)
+
+---
+
+Made with ❤️ by [PineWhisperStudio](https://github.com/PineWhisperStudio)
 
 ## 📜 License
 
