@@ -2,8 +2,8 @@
 name = "termfoto"
 version = "0.1.0"
 edition = "2021"
-description = "终端图片浏览器——快速、轻量、Vim 式操作"
-repository = "https://github.com/boyangso/termfoto"
+description = "Fast terminal photo viewer — keyboard-driven, chafa-rendered"
+repository = "https://github.com/PineWhisperStudio/termfoto"
 license = "MIT"
 keywords = ["tui", "image", "viewer", "terminal", "chafa"]
 categories = ["command-line-utilities", "multimedia::images"]
