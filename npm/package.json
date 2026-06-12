@@ -2,7 +2,10 @@
   "name": "termfoto",
   "version": "0.1.0",
   "description": "Fast terminal photo viewer — keyboard-driven, chafa-rendered",
-  "repository": "PineWhisperStudio/termfoto",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/PineWhisperStudio/termfoto.git"
+  },
   "license": "MIT",
   "os": ["linux"],
   "bin": {
