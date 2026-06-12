@@ -66,3 +66,12 @@ termfoto 是一个终端图片浏览器——做一件事，做到极致。
 - `default = []` — 零系统依赖，使用终端内置协议（sixel/kitty）或 halfblocks
 - `chafa` — 动态链接 libchafa（需 `libchafa-dev`），画质更佳
 - `chafa-static` — 静态链接 chafa，用于预编译二进制发布
+
+**项目结构（非 src）**:
+
+| 路径 | 用途 |
+|------|------|
+| `npm/` | npm 薄包装（package.json + install.js），CI 发布时自动更新版本 |
+| `.github/workflows/ci.yml` | push/PR 触发 build + test + clippy |
+| `.github/workflows/release.yml` | tag 触发：构建二进制 + .deb + crates.io 发布 + npm publish |
+| `assets/` | README demo.gif 等静态资源 |
