@@ -9,8 +9,7 @@
 [![downloads](https://img.shields.io/crates/d/termfoto?label=downloads)](https://crates.io/crates/termfoto)
 [![license](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 
-<!-- TODO: 替换为实际 asciinema 链接 -->
-[![asciicast](https://asciinema.org/a/PLACEHOLDER.svg)](https://asciinema.org/a/PLACEHOLDER)
+![termfoto demo](assets/demo.gif)
 
 ## ✨ Features
 
