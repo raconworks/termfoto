@@ -44,6 +44,12 @@
 
 > 💡 **Want even better quality?** Install with chafa support: `cargo install termfoto --features chafa` (requires `libchafa-dev`). Prebuilt binaries include chafa statically — download and run, no deps needed.
 
+### Option 0: npm
+
+```bash
+npm install -g termfoto
+```
+
 ### Option 1: Cargo (recommended)
 
 ```bash

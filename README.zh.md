@@ -44,6 +44,12 @@
 
 > 💡 **想要更好的画质？** 安装 chafa 支持：`cargo install termfoto --features chafa`（需要 `libchafa-dev`）。预编译二进制已静态链接 chafa——下载即用，无需依赖。
 
+### 方式零：npm
+
+```bash
+npm install -g termfoto
+```
+
 ### 方式一：Cargo（推荐）
 
 ```bash
