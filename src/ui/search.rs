@@ -184,9 +184,10 @@ impl<'a> Widget for SearchBar<'a> {
 
         let hint_style = Style::default().fg(Color::Gray).bg(Color::DarkGray);
 
-        let mut spans = Vec::new();
-        spans.push(Span::styled(display_query, query_style));
-        spans.push(Span::styled(hint, hint_style));
+        let spans = vec![
+            Span::styled(display_query, query_style),
+            Span::styled(hint, hint_style),
+        ];
 
         Paragraph::new(ratatui::text::Line::from(spans))
             .alignment(Alignment::Left)

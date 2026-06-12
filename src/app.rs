@@ -13,6 +13,9 @@ use crate::lang::Lang;
 use crate::scanner::ImageEntry;
 use crate::ui::search::{SearchAction, SearchState};
 
+/// Channel payload: (image_index, protocol, original_dimensions)
+pub type LoadResult = (usize, Protocol, Option<(u32, u32)>);
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum AppState {
     Browser,
@@ -38,7 +41,7 @@ pub struct App {
     pub search: Option<SearchState>,
     pub lang: Lang,
     load_tx: Sender<LoadRequest>,
-    load_rx: Receiver<(usize, Protocol, Option<(u32, u32)>)>,
+    load_rx: Receiver<LoadResult>,
 }
 
 pub const MIN_CELL: u16 = 24;
@@ -51,7 +54,7 @@ impl App {
         images: Vec<ImageEntry>,
         state: AppState,
         load_tx: Sender<LoadRequest>,
-        load_rx: Receiver<(usize, Protocol, Option<(u32, u32)>)>,
+        load_rx: Receiver<LoadResult>,
         lang: Lang,
     ) -> Self {
         Self {
@@ -311,7 +314,7 @@ pub struct LoadRequest {
 pub fn spawn_image_loader(
     picker: Picker,
     paths: Vec<std::path::PathBuf>,
-) -> (Sender<LoadRequest>, Receiver<(usize, Protocol, Option<(u32, u32)>)>) {
+) -> (Sender<LoadRequest>, Receiver<LoadResult>) {
     let (load_tx, load_rx) = std::sync::mpsc::channel::<LoadRequest>();
     let (done_tx, done_rx) = std::sync::mpsc::channel::<(usize, Protocol, Option<(u32, u32)>)>();
     let paths = std::sync::Arc::new(paths);

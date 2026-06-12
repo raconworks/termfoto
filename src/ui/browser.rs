@@ -67,7 +67,7 @@ impl<'a> Widget for BrowserView<'a> {
             let row = (vis_idx / self.app.grid_cols) as u16;
 
             let x = grid_x + col * cell_w;
-            let y = grid_top + row as u16 * cell_h;
+            let y = grid_top + row * cell_h;
             let cell_area = Rect { x, y, width: cell_w, height: cell_h };
 
             if x + cell_w > area.x + area.width || y + cell_h > area.y + area.height {
@@ -75,18 +75,21 @@ impl<'a> Widget for BrowserView<'a> {
             }
 
             let is_selected = slot == self.app.selected;
-            let in_matches = search_matches.map_or(false, |m| m.contains(&slot));
+            let in_matches = search_matches.is_some_and(|m| m.contains(&slot));
             let search_query = self.app.search.as_ref().map(|s| s.query.as_str());
 
+            let cell_meta = CellMeta {
+                filename: &self.app.images[slot].filename,
+                selected: is_selected,
+                search_match: in_matches,
+                search_query,
+                slot,
+            };
             render_browser_cell(
                 cell_area,
                 buf,
-                &self.app.images[slot].filename,
-                is_selected,
-                in_matches,
+                &cell_meta,
                 &self.app.protocol_cache,
-                slot,
-                search_query,
             );
         }
 
@@ -128,24 +131,28 @@ impl<'a> Widget for BrowserView<'a> {
     }
 }
 
+struct CellMeta<'a> {
+    filename: &'a str,
+    selected: bool,
+    search_match: bool,
+    search_query: Option<&'a str>,
+    slot: usize,
+}
+
 fn render_browser_cell(
     area: Rect,
     buf: &mut Buffer,
-    filename: &str,
-    selected: bool,
-    search_match: bool,
+    meta: &CellMeta,
     cache: &std::collections::HashMap<usize, Protocol>,
-    slot: usize,
-    search_query: Option<&str>,
 ) {
-    let border_style = if selected {
+    let border_style = if meta.selected {
         // Both selected and search match: bright yellow
-        if search_match {
+        if meta.search_match {
             Style::default().fg(Color::Yellow)
         } else {
             Style::default().fg(Color::Cyan)
         }
-    } else if search_match {
+    } else if meta.search_match {
         // Search match but not selected: dim yellow
         Style::default().fg(Color::Rgb(128, 128, 0))
     } else {
@@ -169,7 +176,7 @@ fn render_browser_cell(
     }
 
     // Truncate filename to fit cell width
-    let name = truncate_filename(filename, inner.width);
+    let name = truncate_filename(meta.filename, inner.width);
 
     let name_height = 1u16;
     let thumb_area = Rect {
@@ -184,7 +191,7 @@ fn render_browser_cell(
     };
 
     // Render chafa thumbnail centered
-    if let Some(proto) = cache.get(&slot) {
+    if let Some(proto) = cache.get(&meta.slot) {
         let proto_size = proto.size();
         let offset_x = thumb_area
             .width
@@ -204,20 +211,20 @@ fn render_browser_cell(
     }
 
     // Render filename with match highlighting if in search mode
-    let matched_char_style = if selected || search_match {
+    let matched_char_style = if meta.selected || meta.search_match {
         Style::default().fg(Color::Yellow)
     } else {
         Style::default().fg(Color::Rgb(200, 200, 0))
     };
-    let normal_style = if selected {
+    let normal_style = if meta.selected {
         Style::default().fg(Color::Cyan)
-    } else if search_match {
+    } else if meta.search_match {
         Style::default().fg(Color::Rgb(200, 200, 200))
     } else {
         Style::default().fg(Color::White)
     };
 
-    if let Some(query) = search_query {
+    if let Some(query) = meta.search_query {
         if !query.is_empty() {
             render_filename_with_highlight(
                 name_area, buf, &name, query,
@@ -229,9 +236,9 @@ fn render_browser_cell(
 
     // No search / empty query: centered single-span filename
     let span: Span;
-    if selected {
+    if meta.selected {
         span = Span::styled(name.clone(), Style::default().fg(Color::Cyan));
-    } else if search_match {
+    } else if meta.search_match {
         span = Span::styled(name.clone(), Style::default().fg(Color::Rgb(200, 200, 200)));
     } else {
         span = Span::styled(name.clone(), Style::default().fg(Color::White));
