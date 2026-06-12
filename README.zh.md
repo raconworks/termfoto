@@ -44,19 +44,19 @@
 
 > 💡 **想要更好的画质？** 安装 chafa 支持：`cargo install termfoto --features chafa`（需要 `libchafa-dev`）。预编译二进制已静态链接 chafa——下载即用，无需依赖。
 
-### 方式零：npm
+### npm
 
 ```bash
 npm install -g termfoto
 ```
 
-### 方式一：Cargo（推荐）
+### Cargo
 
 ```bash
 cargo install termfoto
 ```
 
-### 方式二：预编译二进制
+### 预编译二进制
 
 从 [Releases](https://github.com/PineWhisperStudio/termfoto/releases) 下载二进制，放到 `PATH` 中：
 
@@ -65,14 +65,14 @@ chmod +x termfoto
 sudo cp termfoto /usr/local/bin/
 ```
 
-### 方式三：.deb 包（Debian/Ubuntu）
+### .deb 包（Debian/Ubuntu）
 
 ```bash
 curl -LO https://github.com/PineWhisperStudio/termfoto/releases/latest/download/termfoto_latest_amd64.deb
 sudo apt install ./termfoto_latest_amd64.deb
 ```
 
-### 方式四：从源码编译
+### 从源码编译
 
 ```bash
 git clone https://github.com/PineWhisperStudio/termfoto.git
@@ -81,12 +81,7 @@ cargo build --release
 ln -s $(pwd)/target/release/termfoto ~/.local/bin/termfoto
 ```
 
-### 创建别名
-
-```bash
-# 可选：在 ~/.bashrc 或 ~/.config/fish/config.fish 中添加
-alias dr='termfoto'
-```
+> 💡 **创建别名：** 在 `~/.bashrc` 或 `~/.config/fish/config.fish` 中添加 `alias dr='termfoto'`。
 
 ## 🚀 使用
 
@@ -126,6 +121,10 @@ termfoto --version       # 显示版本号
 | [ratatui-image](https://github.com/ratatui/ratatui-image) + [chafa](https://hpjansson.org/chafa/) | 图片 → Unicode 字符渲染 |
 | [image](https://github.com/image-rs/image) | 图片解码（PNG/JPEG/WebP） |
 
+## 📜 许可证
+
+MIT
+
 ## 🌟 喜欢 termfoto？
 
 - ⭐ **给个 Star** — 让更多人发现它
@@ -139,7 +138,3 @@ termfoto --version       # 显示版本号
 ---
 
 用 ❤️ 由 [PineWhisperStudio](https://github.com/PineWhisperStudio) 打造
-
-## 📜 许可证
-
-MIT
