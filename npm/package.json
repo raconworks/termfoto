@@ -1,0 +1,24 @@
+{
+  "name": "termfoto",
+  "version": "0.1.0",
+  "description": "Fast terminal photo viewer — keyboard-driven, chafa-rendered",
+  "repository": "PineWhisperStudio/termfoto",
+  "license": "MIT",
+  "os": ["linux"],
+  "bin": {
+    "termfoto": "termfoto"
+  },
+  "scripts": {
+    "postinstall": "node install.js"
+  },
+  "files": [
+    "install.js"
+  ],
+  "keywords": [
+    "tui",
+    "image",
+    "viewer",
+    "terminal",
+    "chafa"
+  ]
+}
