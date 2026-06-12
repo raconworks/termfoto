@@ -73,3 +73,27 @@ jobs:
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
         run: cargo publish --allow-dirty
+
+  npm-publish:
+    needs: release
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          registry-url: "https://registry.npmjs.org"
+
+      - name: 从 tag 同步版本号
+        run: |
+          TAG_VERSION="${GITHUB_REF_NAME#v}"
+          cd npm
+          npm version "${TAG_VERSION}" --no-git-tag-version --allow-same-version
+          echo "Synced npm version to ${TAG_VERSION}"
+
+      - name: 发布到 npm
+        working-directory: npm
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: npm publish --access public
