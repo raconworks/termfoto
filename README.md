@@ -44,19 +44,19 @@
 
 > 💡 **Want even better quality?** Install with chafa support: `cargo install termfoto --features chafa` (requires `libchafa-dev`). Prebuilt binaries include chafa statically — download and run, no deps needed.
 
-### Option 0: npm
+### npm
 
 ```bash
 npm install -g termfoto
 ```
 
-### Option 1: Cargo (recommended)
+### Cargo
 
 ```bash
 cargo install termfoto
 ```
 
-### Option 2: Prebuilt binary
+### Prebuilt binary
 
 Download from [Releases](https://github.com/PineWhisperStudio/termfoto/releases), drop into `PATH`:
 
@@ -65,14 +65,14 @@ chmod +x termfoto
 sudo cp termfoto /usr/local/bin/
 ```
 
-### Option 3: .deb package (Debian/Ubuntu)
+### .deb package (Debian/Ubuntu)
 
 ```bash
 curl -LO https://github.com/PineWhisperStudio/termfoto/releases/latest/download/termfoto_latest_amd64.deb
 sudo apt install ./termfoto_latest_amd64.deb
 ```
 
-### Option 4: Build from source
+### Build from source
 
 ```bash
 git clone https://github.com/PineWhisperStudio/termfoto.git
@@ -81,12 +81,7 @@ cargo build --release
 ln -s $(pwd)/target/release/termfoto ~/.local/bin/termfoto
 ```
 
-### Optional alias
-
-```bash
-# Add to ~/.bashrc or ~/.config/fish/config.fish
-alias dr='termfoto'
-```
+> 💡 **Optional alias:** add `alias dr='termfoto'` to `~/.bashrc` or `~/.config/fish/config.fish`.
 
 ## 🚀 Usage
 
@@ -126,6 +121,10 @@ termfoto --version       # print version
 | [ratatui-image](https://github.com/ratatui/ratatui-image) + [chafa](https://hpjansson.org/chafa/) | Image → Unicode character rendering |
 | [image](https://github.com/image-rs/image) | Image decoding (PNG/JPEG/WebP) |
 
+## 📜 License
+
+MIT
+
 ## 🌟 Like termfoto?
 
 - ⭐ **Star this repo** — helps others discover it
@@ -139,7 +138,3 @@ termfoto --version       # print version
 ---
 
 Made with ❤️ by [PineWhisperStudio](https://github.com/PineWhisperStudio)
-
-## 📜 License
-
-MIT
