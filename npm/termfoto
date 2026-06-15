@@ -1,0 +1,4 @@
+#!/bin/sh
+# termfoto placeholder — replaced by real binary on postinstall
+echo "termfoto: binary not yet downloaded. Run 'npm install termfoto' to complete installation." >&2
+exit 1

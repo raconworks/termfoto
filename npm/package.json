@@ -15,7 +15,8 @@
     "postinstall": "node install.js"
   },
   "files": [
-    "install.js"
+    "install.js",
+    "termfoto"
   ],
   "keywords": [
     "tui",
