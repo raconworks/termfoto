@@ -10,7 +10,7 @@ function getBinaryName() {
 }
 
 function getDownloadUrl(version, binaryName) {
-  return `https://github.com/PineWhisperStudio/termfoto/releases/download/v${version}/${binaryName}`;
+  return `https://github.com/raconworks/termfoto/releases/download/v${version}/${binaryName}`;
 }
 
 function install() {

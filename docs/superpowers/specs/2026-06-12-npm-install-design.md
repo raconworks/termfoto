@@ -20,7 +20,7 @@ npm/
 
 1. 读取 `package.json` 中的 version
 2. 检测 `process.platform`（linux/darwin/win32）+ `process.arch`（x64/arm64）
-3. 构造 URL：`https://github.com/PineWhisperStudio/termfoto/releases/download/v{version}/termfoto`
+3. 构造 URL：`https://github.com/raconworks/termfoto/releases/download/v{version}/termfoto`
 4. 使用 Node.js 内置 `https` 模块下载到包目录
 5. `chmod 755`
 6. 二进制名 = `termfoto`（Windows 加 `.exe`）

@@ -4,7 +4,7 @@
 
 > Browse images at the speed of your terminal.
 
-[![CI](https://github.com/PineWhisperStudio/termfoto/actions/workflows/ci.yml/badge.svg)](https://github.com/PineWhisperStudio/termfoto/actions/workflows/ci.yml)
+[![CI](https://github.com/raconworks/termfoto/actions/workflows/ci.yml/badge.svg)](https://github.com/raconworks/termfoto/actions/workflows/ci.yml)
 [![crates.io](https://img.shields.io/crates/v/termfoto?label=crates.io)](https://crates.io/crates/termfoto)
 [![downloads](https://img.shields.io/crates/d/termfoto?label=downloads)](https://crates.io/crates/termfoto)
 [![license](https://img.shields.io/badge/license-MIT-green)](LICENSE)
@@ -58,7 +58,7 @@ cargo install termfoto
 
 ### Prebuilt binary
 
-Download from [Releases](https://github.com/PineWhisperStudio/termfoto/releases), drop into `PATH`:
+Download from [Releases](https://github.com/raconworks/termfoto/releases), drop into `PATH`:
 
 ```bash
 chmod +x termfoto
@@ -68,14 +68,14 @@ sudo cp termfoto /usr/local/bin/
 ### .deb package (Debian/Ubuntu)
 
 ```bash
-curl -LO https://github.com/PineWhisperStudio/termfoto/releases/latest/download/termfoto_latest_amd64.deb
+curl -LO https://github.com/raconworks/termfoto/releases/latest/download/termfoto_latest_amd64.deb
 sudo apt install ./termfoto_latest_amd64.deb
 ```
 
 ### Build from source
 
 ```bash
-git clone https://github.com/PineWhisperStudio/termfoto.git
+git clone https://github.com/raconworks/termfoto.git
 cd termfoto
 cargo build --release
 ln -s $(pwd)/target/release/termfoto ~/.local/bin/termfoto
@@ -128,13 +128,13 @@ MIT
 ## 🌟 Like termfoto?
 
 - ⭐ **Star this repo** — helps others discover it
-- 🐛 **Report bugs** — [GitHub Issues](https://github.com/PineWhisperStudio/termfoto/issues)
+- 🐛 **Report bugs** — [GitHub Issues](https://github.com/raconworks/termfoto/issues)
 - 💡 **Suggest features** — before requesting, ask: *"will it make browsing slower?"*
 
 ---
 
-📦 **Also available on** [crates.io](https://crates.io/crates/termfoto) · [GitHub Releases](https://github.com/PineWhisperStudio/termfoto/releases)
+📦 **Also available on** [crates.io](https://crates.io/crates/termfoto) · [GitHub Releases](https://github.com/raconworks/termfoto/releases)
 
 ---
 
-Made with ❤️ by [PineWhisperStudio](https://github.com/PineWhisperStudio)
+Made with ❤️ by [raconworks](https://github.com/raconworks)

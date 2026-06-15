@@ -24,7 +24,7 @@
   "name": "termfoto",
   "version": "0.1.0",
   "description": "Fast terminal photo viewer — keyboard-driven, chafa-rendered",
-  "repository": "PineWhisperStudio/termfoto",
+  "repository": "raconworks/termfoto",
   "license": "MIT",
   "os": ["linux"],
   "bin": {
@@ -90,7 +90,7 @@ function getBinaryName() {
 
 function getDownloadUrl(version, binaryName) {
   // Currently only linux x64 is built. Future: add platform/arch suffix to binary names.
-  return `https://github.com/PineWhisperStudio/termfoto/releases/download/v${version}/${binaryName}`;
+  return `https://github.com/raconworks/termfoto/releases/download/v${version}/${binaryName}`;
 }
 
 function install() {

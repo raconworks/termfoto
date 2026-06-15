@@ -40,7 +40,7 @@ cargo install termfoto
 
 ### Option 2: Prebuilt binary
 
-Download from [Releases](https://github.com/PineWhisperStudio/termfoto/releases), drop into `PATH`:
+Download from [Releases](https://github.com/raconworks/termfoto/releases), drop into `PATH`:
 
 ```bash
 chmod +x termfoto
@@ -50,14 +50,14 @@ sudo cp termfoto /usr/local/bin/
 ### Option 3: .deb package (Debian/Ubuntu)
 
 ```bash
-curl -LO https://github.com/PineWhisperStudio/termfoto/releases/latest/download/termfoto_latest_amd64.deb
+curl -LO https://github.com/raconworks/termfoto/releases/latest/download/termfoto_latest_amd64.deb
 sudo apt install ./termfoto_latest_amd64.deb
 ```
 
 ### Option 4: Build from source
 
 ```bash
-git clone https://github.com/PineWhisperStudio/termfoto.git
+git clone https://github.com/raconworks/termfoto.git
 cd termfoto
 cargo build --release
 ln -s $(pwd)/target/release/termfoto ~/.local/bin/termfoto
@@ -94,7 +94,7 @@ cargo install termfoto
 
 ### Prebuilt binary
 
-Download from [Releases](https://github.com/PineWhisperStudio/termfoto/releases), drop into `PATH`:
+Download from [Releases](https://github.com/raconworks/termfoto/releases), drop into `PATH`:
 
 ```bash
 chmod +x termfoto
@@ -104,14 +104,14 @@ sudo cp termfoto /usr/local/bin/
 ### .deb package (Debian/Ubuntu)
 
 ```bash
-curl -LO https://github.com/PineWhisperStudio/termfoto/releases/latest/download/termfoto_latest_amd64.deb
+curl -LO https://github.com/raconworks/termfoto/releases/latest/download/termfoto_latest_amd64.deb
 sudo apt install ./termfoto_latest_amd64.deb
 ```
 
 ### Build from source
 
 ```bash
-git clone https://github.com/PineWhisperStudio/termfoto.git
+git clone https://github.com/raconworks/termfoto.git
 cd termfoto
 cargo build --release
 ln -s $(pwd)/target/release/termfoto ~/.local/bin/termfoto
@@ -128,16 +128,16 @@ ln -s $(pwd)/target/release/termfoto ~/.local/bin/termfoto
 ## 🌟 Like termfoto?
 
 - ⭐ **Star this repo** — helps others discover it
-- 🐛 **Report bugs** — [GitHub Issues](https://github.com/PineWhisperStudio/termfoto/issues)
+- 🐛 **Report bugs** — [GitHub Issues](https://github.com/raconworks/termfoto/issues)
 - 💡 **Suggest features** — before requesting, ask: *"will it make browsing slower?"*
 
 ---
 
-📦 **Also available on** [crates.io](https://crates.io/crates/termfoto) · [GitHub Releases](https://github.com/PineWhisperStudio/termfoto/releases)
+📦 **Also available on** [crates.io](https://crates.io/crates/termfoto) · [GitHub Releases](https://github.com/raconworks/termfoto/releases)
 
 ---
 
-Made with ❤️ by [PineWhisperStudio](https://github.com/PineWhisperStudio)
+Made with ❤️ by [raconworks](https://github.com/raconworks)
 
 ## 📜 License
 
@@ -154,16 +154,16 @@ MIT
 ## 🌟 Like termfoto?
 
 - ⭐ **Star this repo** — helps others discover it
-- 🐛 **Report bugs** — [GitHub Issues](https://github.com/PineWhisperStudio/termfoto/issues)
+- 🐛 **Report bugs** — [GitHub Issues](https://github.com/raconworks/termfoto/issues)
 - 💡 **Suggest features** — before requesting, ask: *"will it make browsing slower?"*
 
 ---
 
-📦 **Also available on** [crates.io](https://crates.io/crates/termfoto) · [GitHub Releases](https://github.com/PineWhisperStudio/termfoto/releases)
+📦 **Also available on** [crates.io](https://crates.io/crates/termfoto) · [GitHub Releases](https://github.com/raconworks/termfoto/releases)
 
 ---
 
-Made with ❤️ by [PineWhisperStudio](https://github.com/PineWhisperStudio)
+Made with ❤️ by [raconworks](https://github.com/raconworks)
 ```
 
 - [ ] **Step 3: 提交**

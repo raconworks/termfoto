@@ -54,16 +54,16 @@ MIT
 ## 🌟 Like termfoto?
 
 - ⭐ **Star this repo** — helps others discover it
-- 🐛 **Report bugs** — [GitHub Issues](https://github.com/PineWhisperStudio/termfoto/issues)
+- 🐛 **Report bugs** — [GitHub Issues](https://github.com/raconworks/termfoto/issues)
 - 💡 **Suggest features** — before requesting, ask: *"will it make browsing slower?"*
 
 ---
 
-📦 **Also available on** [crates.io](https://crates.io/crates/termfoto) · [GitHub Releases](https://github.com/PineWhisperStudio/termfoto/releases)
+📦 **Also available on** [crates.io](https://crates.io/crates/termfoto) · [GitHub Releases](https://github.com/raconworks/termfoto/releases)
 
 ---
 
-Made with ❤️ by [PineWhisperStudio](https://github.com/PineWhisperStudio)
+Made with ❤️ by [raconworks](https://github.com/raconworks)
 ```
 
 ## CLAUDE.md 改动

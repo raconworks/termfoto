@@ -4,7 +4,7 @@
 
 > 像终端一样快地浏览图片。
 
-[![CI](https://github.com/PineWhisperStudio/termfoto/actions/workflows/ci.yml/badge.svg)](https://github.com/PineWhisperStudio/termfoto/actions/workflows/ci.yml)
+[![CI](https://github.com/raconworks/termfoto/actions/workflows/ci.yml/badge.svg)](https://github.com/raconworks/termfoto/actions/workflows/ci.yml)
 [![crates.io](https://img.shields.io/crates/v/termfoto?label=crates.io)](https://crates.io/crates/termfoto)
 [![downloads](https://img.shields.io/crates/d/termfoto?label=downloads)](https://crates.io/crates/termfoto)
 [![license](https://img.shields.io/badge/license-MIT-green)](LICENSE)
@@ -58,7 +58,7 @@ cargo install termfoto
 
 ### 预编译二进制
 
-从 [Releases](https://github.com/PineWhisperStudio/termfoto/releases) 下载二进制，放到 `PATH` 中：
+从 [Releases](https://github.com/raconworks/termfoto/releases) 下载二进制，放到 `PATH` 中：
 
 ```bash
 chmod +x termfoto
@@ -68,14 +68,14 @@ sudo cp termfoto /usr/local/bin/
 ### .deb 包（Debian/Ubuntu）
 
 ```bash
-curl -LO https://github.com/PineWhisperStudio/termfoto/releases/latest/download/termfoto_latest_amd64.deb
+curl -LO https://github.com/raconworks/termfoto/releases/latest/download/termfoto_latest_amd64.deb
 sudo apt install ./termfoto_latest_amd64.deb
 ```
 
 ### 从源码编译
 
 ```bash
-git clone https://github.com/PineWhisperStudio/termfoto.git
+git clone https://github.com/raconworks/termfoto.git
 cd termfoto
 cargo build --release
 ln -s $(pwd)/target/release/termfoto ~/.local/bin/termfoto
@@ -128,13 +128,13 @@ MIT
 ## 🌟 喜欢 termfoto？
 
 - ⭐ **给个 Star** — 让更多人发现它
-- 🐛 **报告 Bug** — [GitHub Issues](https://github.com/PineWhisperStudio/termfoto/issues)
+- 🐛 **报告 Bug** — [GitHub Issues](https://github.com/raconworks/termfoto/issues)
 - 💡 **建议新功能** — 先问自己：*"它会让浏览变慢吗？"*
 
 ---
 
-📦 **也可在** [crates.io](https://crates.io/crates/termfoto) · [GitHub Releases](https://github.com/PineWhisperStudio/termfoto/releases) 获取
+📦 **也可在** [crates.io](https://crates.io/crates/termfoto) · [GitHub Releases](https://github.com/raconworks/termfoto/releases) 获取
 
 ---
 
-用 ❤️ 由 [PineWhisperStudio](https://github.com/PineWhisperStudio) 打造
+用 ❤️ 由 [raconworks](https://github.com/raconworks) 打造

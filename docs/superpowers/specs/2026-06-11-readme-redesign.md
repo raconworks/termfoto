@@ -8,7 +8,7 @@
 
 - README.md 英文为主，README.zh.md 中文翻译同步更新
 - Cargo.toml `description` 改为英文
-- Cargo.toml `repository` 统一为 `PineWhisperStudio/termfoto`
+- Cargo.toml `repository` 统一为 `raconworks/termfoto`
 
 ## 结构变更
 
@@ -31,7 +31,7 @@ ASCII 示意图                       移除（asciinema 替代）
 技术栈                             技术栈（删除 clap）
 许可证                             许可证
                                   🆕 CTA 区（star / 分享 / issues / crates.io / Releases）
-                                  🆕 PineWhisperStudio 署名
+                                  🆕 raconworks 署名
 ```
 
 ## 逐区设计
@@ -40,7 +40,7 @@ ASCII 示意图                       移除（asciinema 替代）
 
 - **slogan**: "Browse images at the speed of your terminal"（强调速度，区别于 GUI）
 - **badge**:
-  - GitHub Actions 真实 CI（`PineWhisperStudio/termfoto/actions/workflows/ci.yml/badge.svg`，需确认 CI workflow 文件名）
+  - GitHub Actions 真实 CI（`raconworks/termfoto/actions/workflows/ci.yml/badge.svg`，需确认 CI workflow 文件名）
   - crates.io version 动态（`crates.io/crates/termfoto?label=version`）
   - crates.io downloads 动态（`crates.io/crates/termfoto?label=downloads`）
   - license 静态保持
@@ -64,7 +64,7 @@ ASCII 示意图                       移除（asciinema 替代）
 | 问题 | 修正 |
 |------|------|
 | `ln -s ... ~/.local/bin/dr` | `ln -s ... ~/.local/bin/termfoto` |
-| Repo URL `PineWhisperStudio` → 已确认正确 | 保持不变 |
+| Repo URL `raconworks` → 已确认正确 | 保持不变 |
 | Release 下载 URL | 保持不变 |
 
 ### 5. 使用区
@@ -93,13 +93,13 @@ ASCII 示意图                       移除（asciinema 替代）
 📦 Also available on
 crates.io · GitHub Releases
 
-Made with ❤️ by PineWhisperStudio
+Made with ❤️ by raconworks
 ```
 
 ### 9. Cargo.toml 同步修改
 
 - `description` → `"Fast terminal photo viewer — keyboard-driven, chafa-rendered"`
-- `repository` → `"https://github.com/PineWhisperStudio/termfoto"`
+- `repository` → `"https://github.com/raconworks/termfoto"`
 
 ## 行动清单
 
