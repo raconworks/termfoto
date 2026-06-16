@@ -6,7 +6,8 @@
 
 [![CI](https://github.com/raconworks/termfoto/actions/workflows/ci.yml/badge.svg)](https://github.com/raconworks/termfoto/actions/workflows/ci.yml)
 [![crates.io](https://img.shields.io/crates/v/termfoto?label=crates.io)](https://crates.io/crates/termfoto)
-[![downloads](https://img.shields.io/crates/d/termfoto?label=downloads)](https://crates.io/crates/termfoto)
+[![downloads](https://img.shields.io/crates/d/termfoto?label=crates.io)](https://crates.io/crates/termfoto)
+[![npm](https://img.shields.io/npm/dt/termfoto?label=npm)](https://www.npmjs.com/package/termfoto)
 [![license](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 
 ![termfoto demo](assets/demo.gif)
