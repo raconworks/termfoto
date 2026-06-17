@@ -321,7 +321,7 @@ pub fn populate_protocol_cache(
     let prefetch_end = (visible_end + app.grid_cols).min(app.images.len());
 
     for slot in prefetch_start..prefetch_end {
-        if app.protocol_cache.contains_key(&slot) || app.requested.contains(&slot) {
+        if app.protocol_cache.contains_key(&slot) || app.requested.contains(&(slot, size.clone())) {
             continue;
         }
         app.request_load(slot, size.clone());

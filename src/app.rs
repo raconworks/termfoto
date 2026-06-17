@@ -1,7 +1,12 @@
 use std::collections::{HashMap, HashSet};
+use std::fs::File;
+use std::io::BufReader;
+use std::path::Path;
 use std::sync::mpsc::{Receiver, Sender};
+use std::time::{Duration, Instant};
 
 use crossterm::event::{KeyCode, KeyModifiers};
+use image::AnimationDecoder;
 use ratatui::layout::Size;
 use ratatui_image::{picker::Picker, protocol::Protocol, FilterType, Resize};
 
@@ -9,8 +14,29 @@ use crate::lang::Lang;
 use crate::scanner::ImageEntry;
 use crate::ui::search::{SearchAction, SearchState};
 
-/// Channel payload: (image_index, protocol, original_dimensions)
-pub type LoadResult = (usize, Protocol, Option<(u32, u32)>);
+const MAX_ANIMATION_FRAMES: usize = 120;
+const DEFAULT_FRAME_DELAY: Duration = Duration::from_millis(100);
+const MIN_FRAME_DELAY: Duration = Duration::from_millis(20);
+
+#[derive(Clone)]
+pub struct AnimationFrame {
+    pub protocol: Protocol,
+    pub delay: Duration,
+}
+
+#[derive(Clone)]
+pub enum FullscreenContent {
+    Static(Protocol),
+    Animation(Vec<AnimationFrame>),
+}
+
+/// Channel payload for a completed background image load.
+pub struct LoadResult {
+    idx: usize,
+    size: LoadSize,
+    content: FullscreenContent,
+    dims: Option<(u32, u32)>,
+}
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum AppState {
@@ -24,7 +50,9 @@ pub struct App {
     pub selected: usize,
     pub scroll_row: usize,
     pub protocol_cache: HashMap<usize, Protocol>,
-    pub fullscreen_protocol: Option<Protocol>,
+    pub fullscreen_content: Option<FullscreenContent>,
+    fullscreen_frame_idx: usize,
+    fullscreen_next_frame_at: Option<Instant>,
     pub fullscreen_pending: bool,
     pub fullscreen_dims: Option<(u32, u32)>,
     pub cache_width: u16,
@@ -33,7 +61,7 @@ pub struct App {
     pub thumb_w: u16,
     pub thumb_h: u16,
     pub visible_rows: usize,
-    pub requested: HashSet<usize>,
+    pub requested: HashSet<(usize, LoadSize)>,
     pub search: Option<SearchState>,
     pub lang: Lang,
     load_tx: Sender<LoadRequest>,
@@ -59,7 +87,9 @@ impl App {
             selected: 0,
             scroll_row: 0,
             protocol_cache: HashMap::new(),
-            fullscreen_protocol: None,
+            fullscreen_content: None,
+            fullscreen_frame_idx: 0,
+            fullscreen_next_frame_at: None,
             fullscreen_pending: false,
             fullscreen_dims: None,
             cache_width: 0,
@@ -130,7 +160,7 @@ impl App {
     pub fn enter_fullscreen(&mut self) {
         if !self.images.is_empty() {
             self.state = AppState::Fullscreen;
-            self.fullscreen_protocol = None;
+            self.reset_fullscreen_content();
             self.fullscreen_pending = true;
             self.request_load(self.selected, LoadSize::Original);
         }
@@ -138,14 +168,14 @@ impl App {
 
     pub fn exit_fullscreen(&mut self) {
         self.state = AppState::Browser;
-        self.fullscreen_protocol = None;
+        self.reset_fullscreen_content();
         self.fullscreen_pending = false;
     }
 
     pub fn fullscreen_prev(&mut self) {
         if self.selected > 0 {
             self.selected -= 1;
-            self.fullscreen_protocol = None;
+            self.reset_fullscreen_content();
             self.fullscreen_pending = true;
             self.request_load(self.selected, LoadSize::Original);
         }
@@ -154,23 +184,102 @@ impl App {
     pub fn fullscreen_next(&mut self) {
         if self.selected + 1 < self.images.len() {
             self.selected += 1;
-            self.fullscreen_protocol = None;
+            self.reset_fullscreen_content();
             self.fullscreen_pending = true;
             self.request_load(self.selected, LoadSize::Original);
         }
     }
 
+    fn reset_fullscreen_content(&mut self) {
+        self.fullscreen_content = None;
+        self.fullscreen_frame_idx = 0;
+        self.fullscreen_next_frame_at = None;
+        self.fullscreen_dims = None;
+    }
+
+    pub fn set_fullscreen_content(
+        &mut self,
+        content: FullscreenContent,
+        dims: Option<(u32, u32)>,
+        now: Instant,
+    ) {
+        self.fullscreen_frame_idx = 0;
+        self.fullscreen_next_frame_at = match &content {
+            FullscreenContent::Animation(frames) => frames.first().map(|frame| now + frame.delay),
+            FullscreenContent::Static(_) => None,
+        };
+        self.fullscreen_content = Some(content);
+        self.fullscreen_dims = dims;
+    }
+
+    pub fn current_fullscreen_protocol(&self) -> Option<&Protocol> {
+        match self.fullscreen_content.as_ref()? {
+            FullscreenContent::Static(proto) => Some(proto),
+            FullscreenContent::Animation(frames) => frames
+                .get(self.fullscreen_frame_idx)
+                .or_else(|| frames.first())
+                .map(|frame| &frame.protocol),
+        }
+    }
+
+    #[cfg(test)]
+    pub fn fullscreen_frame_index(&self) -> usize {
+        self.fullscreen_frame_idx
+    }
+
+    pub fn next_animation_deadline(&self) -> Option<Instant> {
+        if self.state == AppState::Fullscreen {
+            self.fullscreen_next_frame_at
+        } else {
+            None
+        }
+    }
+
+    pub fn advance_animation(&mut self, now: Instant) -> bool {
+        if self.state != AppState::Fullscreen {
+            return false;
+        }
+
+        let Some(FullscreenContent::Animation(frames)) = self.fullscreen_content.as_ref() else {
+            return false;
+        };
+        if frames.len() < 2 {
+            return false;
+        }
+
+        let Some(next_at) = self.fullscreen_next_frame_at else {
+            return false;
+        };
+        if now < next_at {
+            return false;
+        }
+
+        self.fullscreen_frame_idx = (self.fullscreen_frame_idx + 1) % frames.len();
+        self.fullscreen_next_frame_at = Some(now + frames[self.fullscreen_frame_idx].delay);
+        true
+    }
+
     /// Check for completed background image loads.
     /// In Browser mode, results go into protocol_cache.
-    /// In Fullscreen mode, result for the selected image becomes fullscreen_protocol.
+    /// In Fullscreen mode, original-size results for the selected image become fullscreen content.
     pub fn collect_loads(&mut self) {
-        while let Ok((idx, proto, dims)) = self.load_rx.try_recv() {
-            self.requested.remove(&idx);
-            if self.state == AppState::Fullscreen && idx == self.selected {
-                self.fullscreen_protocol = Some(proto);
+        let now = Instant::now();
+        while let Ok(result) = self.load_rx.try_recv() {
+            let LoadResult {
+                idx,
+                size,
+                content,
+                dims,
+            } = result;
+            self.requested.remove(&(idx, size.clone()));
+            if self.state == AppState::Fullscreen
+                && idx == self.selected
+                && matches!(size, LoadSize::Original)
+            {
+                self.set_fullscreen_content(content, dims, now);
                 self.fullscreen_pending = false;
-                self.fullscreen_dims = dims;
             } else {
+                let proto = first_protocol(content);
                 // Discard protocols that exceed current cell (stale from terminal resize)
                 let psize = proto.size();
                 if self.thumb_w > 0 && (psize.width > self.thumb_w || psize.height > self.thumb_h) {
@@ -199,10 +308,11 @@ impl App {
     }
 
     pub fn request_load(&mut self, idx: usize, size: LoadSize) {
-        if self.requested.contains(&idx) {
+        let key = (idx, size.clone());
+        if self.requested.contains(&key) {
             return;
         }
-        self.requested.insert(idx);
+        self.requested.insert(key);
         let _ = self.load_tx.send(LoadRequest { idx, size });
     }
 
@@ -290,7 +400,7 @@ impl App {
 }
 
 /// Size mode for background image loading.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum LoadSize {
     /// Browser thumbnail at fixed cell dimensions.
     Thumbnail { w: u16, h: u16 },
@@ -305,6 +415,96 @@ pub struct LoadRequest {
     pub size: LoadSize,
 }
 
+fn first_protocol(content: FullscreenContent) -> Protocol {
+    match content {
+        FullscreenContent::Static(proto) => proto,
+        FullscreenContent::Animation(mut frames) => frames.remove(0).protocol,
+    }
+}
+
+fn frame_delay(delay: image::Delay) -> Duration {
+    let (numer, denom) = delay.numer_denom_ms();
+    if denom == 0 {
+        return DEFAULT_FRAME_DELAY;
+    }
+    let millis = u64::from(numer) / u64::from(denom);
+    let duration = if millis == 0 {
+        DEFAULT_FRAME_DELAY
+    } else {
+        Duration::from_millis(millis)
+    };
+    duration.max(MIN_FRAME_DELAY)
+}
+
+fn make_protocol(
+    picker: &Picker,
+    img: image::DynamicImage,
+    size: Size,
+    filter: FilterType,
+) -> Option<Protocol> {
+    picker
+        .new_protocol(img, size, Resize::Fit(Some(filter)))
+        .ok()
+}
+
+fn static_original_content(
+    picker: &Picker,
+    img: image::DynamicImage,
+    size: Size,
+) -> Option<FullscreenContent> {
+    make_protocol(picker, img, size, FilterType::Lanczos3).map(FullscreenContent::Static)
+}
+
+fn animation_content_from_frames<I>(
+    picker: &Picker,
+    frames: I,
+    size: Size,
+) -> Option<FullscreenContent>
+where
+    I: IntoIterator<Item = image::ImageResult<image::Frame>>,
+{
+    let mut animation_frames = Vec::new();
+    for frame in frames {
+        let frame = frame.ok()?;
+        if animation_frames.len() == MAX_ANIMATION_FRAMES {
+            return None;
+        }
+        let delay = frame_delay(frame.delay());
+        let img = image::DynamicImage::ImageRgba8(frame.into_buffer());
+        let protocol = make_protocol(picker, img, size, FilterType::Lanczos3)?;
+        animation_frames.push(AnimationFrame { protocol, delay });
+    }
+
+    if animation_frames.len() >= 2 {
+        Some(FullscreenContent::Animation(animation_frames))
+    } else {
+        None
+    }
+}
+
+fn try_decode_animation(picker: &Picker, path: &Path, size: Size) -> Option<FullscreenContent> {
+    let format = image::ImageFormat::from_path(path).ok()?;
+    let file = File::open(path).ok()?;
+    let reader = BufReader::new(file);
+
+    match format {
+        image::ImageFormat::Gif => {
+            let decoder = image::codecs::gif::GifDecoder::new(reader).ok()?;
+            animation_content_from_frames(picker, decoder.into_frames(), size)
+        }
+        image::ImageFormat::Png => {
+            let decoder = image::codecs::png::PngDecoder::new(reader).ok()?;
+            let decoder = decoder.apng().ok()?;
+            animation_content_from_frames(picker, decoder.into_frames(), size)
+        }
+        image::ImageFormat::WebP => {
+            let decoder = image::codecs::webp::WebPDecoder::new(reader).ok()?;
+            animation_content_from_frames(picker, decoder.into_frames(), size)
+        }
+        _ => None,
+    }
+}
+
 /// Spawn a background thread pool that loads images and creates Protocols in parallel.
 /// Returns (sender, receiver) for App to use.
 pub fn spawn_image_loader(
@@ -312,7 +512,7 @@ pub fn spawn_image_loader(
     paths: Vec<std::path::PathBuf>,
 ) -> (Sender<LoadRequest>, Receiver<LoadResult>) {
     let (load_tx, load_rx) = std::sync::mpsc::channel::<LoadRequest>();
-    let (done_tx, done_rx) = std::sync::mpsc::channel::<(usize, Protocol, Option<(u32, u32)>)>();
+    let (done_tx, done_rx) = std::sync::mpsc::channel::<LoadResult>();
     let paths = std::sync::Arc::new(paths);
     let rx = std::sync::Arc::new(std::sync::Mutex::new(load_rx));
 
@@ -337,7 +537,7 @@ pub fn spawn_image_loader(
                 if let Ok(img) = image::open(path) {
                     let font_size = picker.font_size();
                     let dims = (img.width(), img.height());
-                    let (img, size, filter) = match req.size {
+                    let (img, protocol_size, filter) = match req.size {
                         LoadSize::Thumbnail { w, h } => {
                             let pixel_w = w as u32 * font_size.width as u32 * 2;
                             let pixel_h = h as u32 * font_size.height as u32 * 2;
@@ -352,8 +552,21 @@ pub fn spawn_image_loader(
                             (img, size, FilterType::Lanczos3)
                         }
                     };
-                    if let Ok(proto) = picker.new_protocol(img, size, Resize::Fit(Some(filter))) {
-                        let _ = done_tx.send((req.idx, proto, Some(dims)));
+                    let content = match req.size {
+                        LoadSize::Original => try_decode_animation(&picker, path, protocol_size)
+                            .or_else(|| static_original_content(&picker, img, protocol_size)),
+                        LoadSize::Thumbnail { .. } => {
+                            make_protocol(&picker, img, protocol_size, filter)
+                                .map(FullscreenContent::Static)
+                        }
+                    };
+                    if let Some(content) = content {
+                        let _ = done_tx.send(LoadResult {
+                            idx: req.idx,
+                            size: req.size,
+                            content,
+                            dims: Some(dims),
+                        });
                     }
                 }
             }
@@ -367,6 +580,7 @@ pub fn spawn_image_loader(
 mod tests {
     use super::*;
     use std::path::PathBuf;
+    use std::time::{Duration, Instant};
 
     fn make_app(count: usize) -> App {
         let images = (0..count)
@@ -377,8 +591,195 @@ mod tests {
             })
             .collect();
         let (tx, _rx) = std::sync::mpsc::channel::<LoadRequest>();
-        let (_tx2, rx2) = std::sync::mpsc::channel::<(usize, Protocol, Option<(u32, u32)>)>();
+        let (_tx2, rx2) = std::sync::mpsc::channel::<LoadResult>();
         App::new(images, AppState::Browser, tx, rx2, Lang::Zh)
+    }
+
+    fn make_app_with_load_rx(count: usize) -> (App, Receiver<LoadRequest>) {
+        let images = (0..count)
+            .map(|i| ImageEntry {
+                path: PathBuf::from(format!("img{:03}.png", i)),
+                filename: format!("img{:03}.png", i),
+                file_size: 0,
+            })
+            .collect();
+        let (tx, rx) = std::sync::mpsc::channel::<LoadRequest>();
+        let (_tx2, rx2) = std::sync::mpsc::channel::<LoadResult>();
+        (App::new(images, AppState::Browser, tx, rx2, Lang::Zh), rx)
+    }
+
+    fn make_protocol() -> Protocol {
+        let picker = Picker::halfblocks();
+        let img = image::DynamicImage::new_rgba8(1, 1);
+        picker
+            .new_protocol(img, Size::new(1, 1), Resize::Fit(Some(FilterType::Nearest)))
+            .unwrap()
+    }
+
+    fn make_animation_frame(delay_ms: u64) -> AnimationFrame {
+        AnimationFrame {
+            protocol: make_protocol(),
+            delay: Duration::from_millis(delay_ms),
+        }
+    }
+
+    fn make_image_frame(delay_ms: u32) -> image::Frame {
+        image::Frame::from_parts(
+            image::RgbaImage::new(1, 1),
+            0,
+            0,
+            image::Delay::from_numer_denom_ms(delay_ms, 1),
+        )
+    }
+
+    fn make_colored_image_frame(delay_ms: u32, color: [u8; 4]) -> image::Frame {
+        image::Frame::from_parts(
+            image::RgbaImage::from_pixel(1, 1, image::Rgba(color)),
+            0,
+            0,
+            image::Delay::from_numer_denom_ms(delay_ms, 1),
+        )
+    }
+
+    fn install_test_animation(app: &mut App, now: Instant) {
+        app.state = AppState::Fullscreen;
+        app.set_fullscreen_content(
+            FullscreenContent::Animation(vec![
+                make_animation_frame(100),
+                make_animation_frame(150),
+            ]),
+            Some((1, 1)),
+            now,
+        );
+    }
+
+    #[test]
+    fn animation_does_not_advance_before_delay() {
+        let mut app = make_app(1);
+        let start = Instant::now();
+        install_test_animation(&mut app, start);
+
+        assert!(!app.advance_animation(start + Duration::from_millis(99)));
+        assert_eq!(app.fullscreen_frame_index(), 0);
+    }
+
+    #[test]
+    fn animation_advances_after_delay() {
+        let mut app = make_app(1);
+        let start = Instant::now();
+        install_test_animation(&mut app, start);
+
+        assert!(app.advance_animation(start + Duration::from_millis(100)));
+        assert_eq!(app.fullscreen_frame_index(), 1);
+    }
+
+    #[test]
+    fn animation_loops_from_last_frame_to_first() {
+        let mut app = make_app(1);
+        let start = Instant::now();
+        install_test_animation(&mut app, start);
+
+        app.advance_animation(start + Duration::from_millis(100));
+        assert!(app.advance_animation(start + Duration::from_millis(250)));
+        assert_eq!(app.fullscreen_frame_index(), 0);
+    }
+
+    #[test]
+    fn exiting_fullscreen_resets_animation_state() {
+        let mut app = make_app(1);
+        let start = Instant::now();
+        install_test_animation(&mut app, start);
+        app.advance_animation(start + Duration::from_millis(100));
+
+        app.exit_fullscreen();
+
+        assert_eq!(app.fullscreen_frame_index(), 0);
+        assert!(app.current_fullscreen_protocol().is_none());
+    }
+
+    #[test]
+    fn thumbnail_request_does_not_block_original_request() {
+        let (mut app, rx) = make_app_with_load_rx(1);
+
+        app.request_load(0, LoadSize::Thumbnail { w: 10, h: 5 });
+        app.request_load(0, LoadSize::Original);
+
+        assert_eq!(
+            rx.try_recv().unwrap().size,
+            LoadSize::Thumbnail { w: 10, h: 5 }
+        );
+        assert_eq!(rx.try_recv().unwrap().size, LoadSize::Original);
+    }
+
+    #[test]
+    fn animation_content_requires_multiple_frames() {
+        let picker = Picker::halfblocks();
+        let frames = vec![Ok(make_image_frame(100))];
+
+        let content = animation_content_from_frames(&picker, frames, Size::new(1, 1));
+
+        assert!(content.is_none());
+    }
+
+    #[test]
+    fn animation_content_accepts_two_to_max_frames() {
+        let picker = Picker::halfblocks();
+        let frames = vec![Ok(make_image_frame(100)), Ok(make_image_frame(150))];
+
+        let content = animation_content_from_frames(&picker, frames, Size::new(1, 1));
+
+        match content {
+            Some(FullscreenContent::Animation(frames)) => {
+                assert_eq!(frames.len(), 2);
+                assert_eq!(frames[0].delay, Duration::from_millis(100));
+                assert_eq!(frames[1].delay, Duration::from_millis(150));
+            }
+            _ => panic!("expected animation content"),
+        }
+    }
+
+    #[test]
+    fn animation_content_rejects_frames_over_limit() {
+        let picker = Picker::halfblocks();
+        let frames: Vec<_> = (0..=MAX_ANIMATION_FRAMES)
+            .map(|_| Ok(make_image_frame(100)))
+            .collect();
+
+        let content = animation_content_from_frames(&picker, frames, Size::new(1, 1));
+
+        assert!(content.is_none());
+    }
+
+    #[test]
+    fn zero_frame_delay_defaults_to_100ms() {
+        assert_eq!(
+            frame_delay(image::Delay::from_numer_denom_ms(0, 1)),
+            DEFAULT_FRAME_DELAY
+        );
+    }
+
+    #[test]
+    fn tiny_gif_decodes_to_animation_content() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("tiny.gif");
+        {
+            let file = File::create(&path).unwrap();
+            let mut encoder = image::codecs::gif::GifEncoder::new(file);
+            encoder
+                .encode_frames(vec![
+                    make_colored_image_frame(100, [255, 0, 0, 255]),
+                    make_colored_image_frame(120, [0, 255, 0, 255]),
+                ])
+                .unwrap();
+        }
+
+        let picker = Picker::halfblocks();
+        let content = try_decode_animation(&picker, &path, Size::new(1, 1));
+
+        match content {
+            Some(FullscreenContent::Animation(frames)) => assert_eq!(frames.len(), 2),
+            _ => panic!("expected animated GIF content"),
+        }
     }
 
     #[test]
@@ -479,7 +880,7 @@ mod tests {
             })
             .collect();
         let (tx, _rx) = std::sync::mpsc::channel::<LoadRequest>();
-        let (_tx2, rx2) = std::sync::mpsc::channel::<(usize, Protocol, Option<(u32, u32)>)>();
+        let (_tx2, rx2) = std::sync::mpsc::channel::<LoadResult>();
         App::new(images, AppState::Browser, tx, rx2, Lang::Zh)
     }
 

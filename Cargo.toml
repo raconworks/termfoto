@@ -21,7 +21,7 @@ path = "src/main.rs"
 ratatui = { version = "0.30", default-features = false, features = ["crossterm"] }
 crossterm = "0.29"
 ratatui-image = { version = "11", default-features = false, features = ["crossterm"] }
-image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp"] }
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp", "gif"] }
 anyhow = "1"
 
 [profile.release]

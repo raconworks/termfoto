@@ -71,7 +71,7 @@ impl<'a> Widget for PreviewView<'a> {
         };
 
         // --- Image area ---
-        if let Some(ref proto) = self.app.fullscreen_protocol {
+        if let Some(proto) = self.app.current_fullscreen_protocol() {
             let proto_size = proto.size();
             let offset_x = image_area.width.saturating_sub(proto_size.width) / 2;
             let offset_y = image_area.height.saturating_sub(proto_size.height) / 2;

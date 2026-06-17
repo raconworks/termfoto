@@ -26,7 +26,7 @@ impl Drop for TermGuard {
 
 use std::io;
 use std::path::PathBuf;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use anyhow::Result;
 use crossterm::{
@@ -151,11 +151,18 @@ fn run(
 
         // Check for completed background image loads
         app.collect_loads();
+        app.advance_animation(Instant::now());
 
         // Render
         terminal.draw(|f| ui::draw(f, &mut app, cell_w, cell_h))?;
 
-        if event::poll(Duration::from_millis(50))? {
+        let poll_timeout = app
+            .next_animation_deadline()
+            .map(|deadline| deadline.saturating_duration_since(Instant::now()))
+            .unwrap_or_else(|| Duration::from_millis(50))
+            .min(Duration::from_millis(50));
+
+        if event::poll(poll_timeout)? {
             if let Event::Key(key) = event::read()? {
                 if key.kind != KeyEventKind::Press {
                     continue;
