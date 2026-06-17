@@ -226,7 +226,10 @@ mod tests {
     #[test]
     fn test_searchbar_with_no_query() {
         let state = SearchState::new(0, '/');
-        let bar = SearchBar { state: &state, lang: Lang::Zh };
+        let bar = SearchBar {
+            state: &state,
+            lang: Lang::Zh,
+        };
         let area = Rect {
             x: 0,
             y: 0,

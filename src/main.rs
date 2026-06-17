@@ -73,7 +73,11 @@ fn main() -> Result<()> {
             let file_size = std::fs::metadata(p).map(|m| m.len()).unwrap_or(0);
             let entry = scanner::ImageEntry {
                 path: p.clone(),
-                filename: p.file_name().unwrap_or_default().to_string_lossy().into_owned(),
+                filename: p
+                    .file_name()
+                    .unwrap_or_default()
+                    .to_string_lossy()
+                    .into_owned(),
                 file_size,
             };
             (vec![entry], AppState::Fullscreen)
@@ -124,7 +128,11 @@ fn run(
     loop {
         let size = terminal.size()?;
         // Dynamic grid: visually square cells (终端字符 ≈ 1:2 宽高比)
-        let logo_h = if size.width >= MIN_LOGO_WIDTH { LOGO_HEIGHT } else { 0 };
+        let logo_h = if size.width >= MIN_LOGO_WIDTH {
+            LOGO_HEIGHT
+        } else {
+            0
+        };
         let avail_h = size.height.saturating_sub(logo_h + 1); // +1 status bar
         let char_ratio = picker.font_size().height as f32 / picker.font_size().width as f32;
         let cols = (size.width / MIN_CELL).max(2) as usize;
@@ -162,4 +170,3 @@ fn run(
 
     Ok(())
 }
-

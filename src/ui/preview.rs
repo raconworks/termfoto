@@ -1,3 +1,5 @@
+use crate::app::{App, LOGO_HEIGHT, MIN_LOGO_WIDTH};
+use crate::ui::render_logo;
 use ratatui::{
     buffer::Buffer,
     layout::{Alignment, Rect},
@@ -6,8 +8,6 @@ use ratatui::{
     widgets::{Paragraph, Widget},
 };
 use ratatui_image::Image;
-use crate::app::{App, LOGO_HEIGHT, MIN_LOGO_WIDTH};
-use crate::ui::render_logo;
 
 pub struct PreviewView<'a> {
     pub app: &'a App,
@@ -32,7 +32,10 @@ impl<'a> Widget for PreviewView<'a> {
 
         // Reserve bottom area for logo + status bar
         let main_h = area.height.saturating_sub(logo_h + status_h);
-        let main_area = Rect { height: main_h, ..area };
+        let main_area = Rect {
+            height: main_h,
+            ..area
+        };
 
         let logo_area = Rect {
             y: area.y + main_h,
@@ -48,7 +51,10 @@ impl<'a> Widget for PreviewView<'a> {
         // 3:1 split: image (left 75%) + info panel (right 25%)
         let info_w = (main_area.width / 4).max(20);
         let image_w = main_area.width.saturating_sub(info_w);
-        let image_area = Rect { width: image_w, ..main_area };
+        let image_area = Rect {
+            width: image_w,
+            ..main_area
+        };
         let info_area = Rect {
             x: main_area.x + image_w,
             width: info_w,
@@ -72,7 +78,9 @@ impl<'a> Widget for PreviewView<'a> {
         // --- Info panel ---
         if let Some(entry) = self.app.images.get(self.app.selected) {
             let lang = &self.app.lang;
-            let ext = entry.path.extension()
+            let ext = entry
+                .path
+                .extension()
                 .and_then(|e| e.to_str())
                 .unwrap_or("?")
                 .to_uppercase();
@@ -86,19 +94,27 @@ impl<'a> Widget for PreviewView<'a> {
                 lines.push(format!("{}: {}×{}", lang.label_dims(), w, h));
             }
             // File size
-            lines.push(format!("{}: {}", lang.label_size(), format_size(entry.file_size)));
+            lines.push(format!(
+                "{}: {}",
+                lang.label_size(),
+                format_size(entry.file_size)
+            ));
             // Type
             lines.push(format!("{}: {}", lang.label_type(), ext));
             // Path
             let path_str = entry.path.to_string_lossy();
             let display_path = if path_str.len() > info_w as usize - lang.label_path().len() - 2 {
-                format!("...{}", &path_str[path_str.len().saturating_sub(info_w as usize - 6)..])
+                format!(
+                    "...{}",
+                    &path_str[path_str.len().saturating_sub(info_w as usize - 6)..]
+                )
             } else {
                 path_str.into_owned()
             };
             lines.push(format!("{}: {}", lang.label_path(), display_path));
 
-            let text_lines: Vec<Line> = lines.iter()
+            let text_lines: Vec<Line> = lines
+                .iter()
                 .map(|l| Line::from(Span::styled(l.clone(), Style::default().fg(Color::White))))
                 .collect();
             Paragraph::new(text_lines)

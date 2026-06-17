@@ -1,3 +1,6 @@
+use crate::app::{App, LoadSize, LOGO_HEIGHT, MIN_LOGO_WIDTH};
+use crate::ui::render_logo;
+use crate::ui::search::SearchBar;
 use ratatui::{
     buffer::Buffer,
     layout::{Alignment, Rect},
@@ -6,9 +9,6 @@ use ratatui::{
     widgets::{Block, Borders, Paragraph, Widget},
 };
 use ratatui_image::{protocol::Protocol, Image};
-use crate::app::{App, LoadSize, LOGO_HEIGHT, MIN_LOGO_WIDTH};
-use crate::ui::search::SearchBar;
-use crate::ui::render_logo;
 
 /// Truncate filename to fit cell width, appending "…" if needed.
 fn truncate_filename(name: &str, max_width: u16) -> String {
@@ -55,11 +55,8 @@ impl<'a> Widget for BrowserView<'a> {
         let grid_w = self.app.grid_cols as u16 * cell_w;
         let grid_x = area.x + (area.width.saturating_sub(grid_w)) / 2;
 
-        let search_matches: Option<&[usize]> = self
-            .app
-            .search
-            .as_ref()
-            .map(|s| s.matches.as_slice());
+        let search_matches: Option<&[usize]> =
+            self.app.search.as_ref().map(|s| s.matches.as_slice());
 
         for slot in start..end {
             let vis_idx = slot - start;
@@ -68,7 +65,12 @@ impl<'a> Widget for BrowserView<'a> {
 
             let x = grid_x + col * cell_w;
             let y = grid_top + row * cell_h;
-            let cell_area = Rect { x, y, width: cell_w, height: cell_h };
+            let cell_area = Rect {
+                x,
+                y,
+                width: cell_w,
+                height: cell_h,
+            };
 
             if x + cell_w > area.x + area.width || y + cell_h > area.y + area.height {
                 continue;
@@ -85,12 +87,7 @@ impl<'a> Widget for BrowserView<'a> {
                 search_query,
                 slot,
             };
-            render_browser_cell(
-                cell_area,
-                buf,
-                &cell_meta,
-                &self.app.protocol_cache,
-            );
+            render_browser_cell(cell_area, buf, &cell_meta, &self.app.protocol_cache);
         }
 
         // Logo: bottom-right 6 rows, status bar shares the last row
@@ -110,7 +107,11 @@ impl<'a> Widget for BrowserView<'a> {
             ..area
         };
         if let Some(ref search) = self.app.search {
-            SearchBar { state: search, lang: self.app.lang }.render(status_area, buf);
+            SearchBar {
+                state: search,
+                lang: self.app.lang,
+            }
+            .render(status_area, buf);
         } else {
             let selected_name = self
                 .app
@@ -120,7 +121,10 @@ impl<'a> Widget for BrowserView<'a> {
                 .unwrap_or("");
             let info = self.app.lang.browser_status(
                 selected_name,
-                self.app.selected.saturating_add(1).min(self.app.images.len()),
+                self.app
+                    .selected
+                    .saturating_add(1)
+                    .min(self.app.images.len()),
                 self.app.images.len(),
             );
             let span = Span::styled(info, Style::default().fg(Color::White).bg(Color::DarkGray));
@@ -193,14 +197,8 @@ fn render_browser_cell(
     // Render chafa thumbnail centered
     if let Some(proto) = cache.get(&meta.slot) {
         let proto_size = proto.size();
-        let offset_x = thumb_area
-            .width
-            .saturating_sub(proto_size.width)
-            / 2;
-        let offset_y = thumb_area
-            .height
-            .saturating_sub(proto_size.height)
-            / 2;
+        let offset_x = thumb_area.width.saturating_sub(proto_size.width) / 2;
+        let offset_y = thumb_area.height.saturating_sub(proto_size.height) / 2;
         let centered = Rect {
             x: thumb_area.x + offset_x,
             y: thumb_area.y + offset_y,
@@ -227,8 +225,12 @@ fn render_browser_cell(
     if let Some(query) = meta.search_query {
         if !query.is_empty() {
             render_filename_with_highlight(
-                name_area, buf, &name, query,
-                matched_char_style, normal_style,
+                name_area,
+                buf,
+                &name,
+                query,
+                matched_char_style,
+                normal_style,
             );
             return;
         }
@@ -306,7 +308,10 @@ pub fn populate_protocol_cache(
     let thumb_h = cell_h.saturating_sub(3); // minus border + filename row
     app.thumb_w = thumb_w;
     app.thumb_h = thumb_h;
-    let size = LoadSize::Thumbnail { w: thumb_w, h: thumb_h };
+    let size = LoadSize::Thumbnail {
+        w: thumb_w,
+        h: thumb_h,
+    };
 
     let start = app.scroll_row * app.grid_cols;
     let visible_end = (start + app.visible_rows * app.grid_cols).min(app.images.len());

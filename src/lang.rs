@@ -68,7 +68,13 @@ impl Lang {
     }
 
     /// Fullscreen status bar: filename, index, total, loading suffix
-    pub fn preview_status(&self, name: &str, selected: usize, total: usize, status: &str) -> String {
+    pub fn preview_status(
+        &self,
+        name: &str,
+        selected: usize,
+        total: usize,
+        status: &str,
+    ) -> String {
         match self {
             Lang::Zh => format!(
                 " {} [{}/{}]  原图尺寸  ← → 切换  Enter/Esc/q 返回  L切换语言{}",
@@ -91,19 +97,34 @@ impl Lang {
 
     // ---- Info panel labels ----
     pub fn label_file(&self) -> &'static str {
-        match self { Lang::Zh => "文件", Lang::En => "File" }
+        match self {
+            Lang::Zh => "文件",
+            Lang::En => "File",
+        }
     }
     pub fn label_dims(&self) -> &'static str {
-        match self { Lang::Zh => "像素", Lang::En => "Dimensions" }
+        match self {
+            Lang::Zh => "像素",
+            Lang::En => "Dimensions",
+        }
     }
     pub fn label_size(&self) -> &'static str {
-        match self { Lang::Zh => "大小", Lang::En => "Size" }
+        match self {
+            Lang::Zh => "大小",
+            Lang::En => "Size",
+        }
     }
     pub fn label_type(&self) -> &'static str {
-        match self { Lang::Zh => "格式", Lang::En => "Type" }
+        match self {
+            Lang::Zh => "格式",
+            Lang::En => "Type",
+        }
     }
     pub fn label_path(&self) -> &'static str {
-        match self { Lang::Zh => "路径", Lang::En => "Path" }
+        match self {
+            Lang::Zh => "路径",
+            Lang::En => "Path",
+        }
     }
 }
 
@@ -152,11 +173,20 @@ mod tests {
 
     #[test]
     fn test_zh_en_strings_differ() {
-        assert_ne!(Lang::Zh.browser_status("a", 1, 5), Lang::En.browser_status("a", 1, 5));
-        assert_ne!(Lang::Zh.search_hint_matches(1, 5), Lang::En.search_hint_matches(1, 5));
+        assert_ne!(
+            Lang::Zh.browser_status("a", 1, 5),
+            Lang::En.browser_status("a", 1, 5)
+        );
+        assert_ne!(
+            Lang::Zh.search_hint_matches(1, 5),
+            Lang::En.search_hint_matches(1, 5)
+        );
         assert_ne!(Lang::Zh.search_hint_empty(), Lang::En.search_hint_empty());
         assert_ne!(Lang::Zh.search_hint_none(), Lang::En.search_hint_none());
-        assert_ne!(Lang::Zh.preview_status("a", 1, 5, ""), Lang::En.preview_status("a", 1, 5, ""));
+        assert_ne!(
+            Lang::Zh.preview_status("a", 1, 5, ""),
+            Lang::En.preview_status("a", 1, 5, "")
+        );
         assert_ne!(Lang::Zh.loading_text(), Lang::En.loading_text());
         assert_ne!(Lang::Zh.label_file(), Lang::En.label_file());
         assert_ne!(Lang::Zh.label_dims(), Lang::En.label_dims());
