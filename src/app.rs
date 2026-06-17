@@ -3,11 +3,7 @@ use std::sync::mpsc::{Receiver, Sender};
 
 use crossterm::event::{KeyCode, KeyModifiers};
 use ratatui::layout::Size;
-use ratatui_image::{
-    picker::Picker,
-    protocol::Protocol,
-    Resize, FilterType,
-};
+use ratatui_image::{picker::Picker, protocol::Protocol, FilterType, Resize};
 
 use crate::lang::Lang;
 use crate::scanner::ImageEntry;
@@ -45,7 +41,7 @@ pub struct App {
 }
 
 pub const MIN_CELL: u16 = 24;
-pub const LOGO_HEIGHT: u16 = 6;
+pub const LOGO_HEIGHT: u16 = 3;
 pub const MIN_LOGO_WIDTH: u16 = 70;
 const MAX_CACHE_SIZE: usize = 200;
 
@@ -356,11 +352,7 @@ pub fn spawn_image_loader(
                             (img, size, FilterType::Lanczos3)
                         }
                     };
-                    if let Ok(proto) = picker.new_protocol(
-                        img,
-                        size,
-                        Resize::Fit(Some(filter)),
-                    ) {
+                    if let Ok(proto) = picker.new_protocol(img, size, Resize::Fit(Some(filter))) {
                         let _ = done_tx.send((req.idx, proto, Some(dims)));
                     }
                 }
