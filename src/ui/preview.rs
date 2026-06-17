@@ -13,6 +13,33 @@ pub struct PreviewView<'a> {
     pub app: &'a App,
 }
 
+struct PreviewAreas {
+    main: Rect,
+    logo: Rect,
+    status: Rect,
+}
+
+fn preview_areas(area: Rect, show_logo: bool) -> PreviewAreas {
+    let bottom_h = if show_logo { LOGO_HEIGHT } else { 1 };
+    let main_h = area.height.saturating_sub(bottom_h);
+    let main = Rect {
+        height: main_h,
+        ..area
+    };
+    let logo = Rect {
+        y: area.y + area.height.saturating_sub(LOGO_HEIGHT),
+        height: if show_logo { LOGO_HEIGHT } else { 0 },
+        ..area
+    };
+    let status = Rect {
+        y: area.y + area.height.saturating_sub(1),
+        height: 1,
+        ..area
+    };
+
+    PreviewAreas { main, logo, status }
+}
+
 /// Format file size for display.
 fn format_size(bytes: u64) -> String {
     if bytes < 1024 {
@@ -27,26 +54,8 @@ fn format_size(bytes: u64) -> String {
 impl<'a> Widget for PreviewView<'a> {
     fn render(self, area: Rect, buf: &mut Buffer) {
         let show_logo = area.width >= MIN_LOGO_WIDTH;
-        let logo_h = if show_logo { LOGO_HEIGHT } else { 0 };
-        let status_h = 1u16;
-
-        // Reserve bottom area for logo + status bar
-        let main_h = area.height.saturating_sub(logo_h + status_h);
-        let main_area = Rect {
-            height: main_h,
-            ..area
-        };
-
-        let logo_area = Rect {
-            y: area.y + main_h,
-            height: logo_h,
-            ..area
-        };
-        let status_area = Rect {
-            y: area.y + main_h + logo_h,
-            height: status_h,
-            ..area
-        };
+        let areas = preview_areas(area, show_logo);
+        let main_area = areas.main;
 
         // 3:1 split: image (left 75%) + info panel (right 25%)
         let info_w = (main_area.width / 4).max(20);
@@ -124,7 +133,7 @@ impl<'a> Widget for PreviewView<'a> {
 
         // --- Logo ---
         if show_logo {
-            render_logo(logo_area, buf);
+            render_logo(areas.logo, buf);
         }
 
         // --- Status bar ---
@@ -143,7 +152,30 @@ impl<'a> Widget for PreviewView<'a> {
             let span = Span::styled(info, Style::default().fg(Color::White).bg(Color::DarkGray));
             Paragraph::new(span)
                 .alignment(Alignment::Left)
-                .render(status_area, buf);
+                .render(areas.status, buf);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn preview_status_bar_shares_last_logo_row() {
+        let area = Rect {
+            x: 0,
+            y: 0,
+            width: 100,
+            height: 30,
+        };
+
+        let areas = preview_areas(area, true);
+
+        assert_eq!(areas.main.height, 30 - LOGO_HEIGHT);
+        assert_eq!(areas.logo.y, 30 - LOGO_HEIGHT);
+        assert_eq!(areas.logo.height, LOGO_HEIGHT);
+        assert_eq!(areas.status.y, 29);
+        assert_eq!(areas.status.height, 1);
     }
 }
