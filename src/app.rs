@@ -486,7 +486,9 @@ impl App {
         self.regenerate_zoom_protocol();
     }
 
-    /// 用缓存原始图像以当前缩放级别重新生成协议
+    /// 用缓存原始图像以当前缩放级别重新生成协议。
+    /// 使用 `image::imageops::resize` 直接缩放像素（支持放大），
+    /// 而非依赖 ratatui-image 的 Resize::Fit（仅缩小）。
     fn regenerate_zoom_protocol(&mut self) {
         let Some(content) = self.fullscreen_content.as_mut() else {
             return;
@@ -494,62 +496,112 @@ impl App {
         let FullscreenContent::Static(sc) = content else {
             return;
         };
-        // Use image native terminal resolution as zoom base (1:1 pixel→cell mapping).
-        // This gives correct scale regardless of viewport size.
         let fs = self.picker.font_size();
-        let nat_w = sc.original.width().div_ceil(fs.width as u32) as u16;
-        let nat_h = sc.original.height().div_ceil(fs.height as u32) as u16;
-        let new_w = ((nat_w as f32) * self.zoom).max(1.0) as u16;
-        let new_h = ((nat_h as f32) * self.zoom).max(1.0) as u16;
-        let size = Size::new(new_w, new_h);
-        if let Ok(protocol) = self.picker.new_protocol(
-            sc.original.clone(),
-            size,
-            Resize::Fit(Some(FilterType::Lanczos3)),
-        ) {
+        let img_w = sc.original.width();
+        let img_h = sc.original.height();
+        // Viewport pixel size = cells × font pixel size
+        let vp_px_w = (self.fullscreen_image_w as u32).saturating_mul(fs.width as u32);
+        let vp_px_h = (self.fullscreen_image_h as u32).saturating_mul(fs.height as u32);
+
+        // Target pixel size = viewport pixels × zoom
+        let target_px_w = ((vp_px_w as f32) * self.zoom).max(1.0) as u32;
+        let target_px_h = ((vp_px_h as f32) * self.zoom).max(1.0) as u32;
+
+        // Crop region from original image (centered, offset by pan).
+        // At zoom < 1.0 the crop is the full image; at zoom > 1.0 it's a sub-region.
+        let crop_w = ((img_w as f32) / self.zoom).max(1.0).min(img_w as f32) as u32;
+        let crop_h = ((img_h as f32) / self.zoom).max(1.0).min(img_h as f32) as u32;
+        // Pan in pixels (pan is in terminal cells)
+        let pan_px_x = (self.pan_x as f32 * fs.width as f32) as i32;
+        let pan_px_y = (self.pan_y as f32 * fs.height as f32) as i32;
+        let crop_x = ((img_w.saturating_sub(crop_w)) as f32 / 2.0) as i32 + pan_px_x;
+        let crop_y = ((img_h.saturating_sub(crop_h)) as f32 / 2.0) as i32 + pan_px_y;
+        let crop_x = crop_x.max(0).min((img_w.saturating_sub(crop_w)) as i32) as u32;
+        let crop_y = crop_y.max(0).min((img_h.saturating_sub(crop_h)) as i32) as u32;
+
+        // Crop and resize to target pixel size
+        let cropped = sc.original.crop_imm(crop_x, crop_y, crop_w, crop_h);
+        let resized = image::imageops::resize(
+            &cropped,
+            target_px_w,
+            target_px_h,
+            image::imageops::FilterType::Lanczos3,
+        );
+        let resized_img = image::DynamicImage::ImageRgba8(resized);
+
+        // Create protocol from resized image, fitting to viewport cell size.
+        // Use Resize::Fit with None filter since the image is already at exact pixel size.
+        let proto_size = Size::new(
+            self.fullscreen_image_w.max(1),
+            self.fullscreen_image_h.max(1),
+        );
+        if let Ok(protocol) = self
+            .picker
+            .new_protocol(resized_img, proto_size, Resize::Fit(None))
+        {
             sc.protocol = protocol;
         }
         self.clamp_pan();
     }
 
-    /// 平移后钳制到图片边界
+    /// 平移后钳制到图片边界（基于原始图像像素尺寸）
     fn clamp_pan(&mut self) {
-        let Some(proto) = self.current_fullscreen_protocol() else {
+        let Some(FullscreenContent::Static(sc)) = self.fullscreen_content.as_ref() else {
             return;
         };
-        let pw = proto.size().width as i16;
-        let ph = proto.size().height as i16;
-        let vw = self.fullscreen_image_w as i16;
-        let vh = self.fullscreen_image_h as i16;
-        let max_x = ((pw - vw).max(0) / 2).max(0);
-        let max_y = ((ph - vh).max(0) / 2).max(0);
-        self.pan_x = self.pan_x.clamp(-max_x, max_x);
-        self.pan_y = self.pan_y.clamp(-max_y, max_y);
+        let fs = self.picker.font_size();
+        let img_w = sc.original.width() as i32;
+        let img_h = sc.original.height() as i32;
+        // Crop window size in pixels at current zoom
+        let crop_w = ((img_w as f32) / self.zoom).max(1.0) as i32;
+        let crop_h = ((img_h as f32) / self.zoom).max(1.0) as i32;
+        // Max pixel offset from center
+        let max_px_x = ((img_w - crop_w) / 2).max(0);
+        let max_px_y = ((img_h - crop_h) / 2).max(0);
+        // Convert to cells (with rounding up for safety)
+        let max_cell_x = ((max_px_x + fs.width as i32 - 1) / fs.width as i32).max(0) as i16;
+        let max_cell_y = ((max_px_y + fs.height as i32 - 1) / fs.height as i32).max(0) as i16;
+        self.pan_x = self.pan_x.clamp(-max_cell_x, max_cell_x);
+        self.pan_y = self.pan_y.clamp(-max_cell_y, max_cell_y);
     }
 
     fn pan_step_x(&self) -> i16 {
-        ((self.fullscreen_image_w as f32) * 0.1).max(1.0) as i16
+        let Some(FullscreenContent::Static(sc)) = self.fullscreen_content.as_ref() else {
+            return 1;
+        };
+        let fs = self.picker.font_size();
+        let nat_w = sc.original.width().div_ceil(fs.width as u32) as f32;
+        ((nat_w / self.zoom) * 0.1).max(1.0) as i16
     }
 
     fn pan_step_y(&self) -> i16 {
-        ((self.fullscreen_image_h as f32) * 0.1).max(1.0) as i16
+        let Some(FullscreenContent::Static(sc)) = self.fullscreen_content.as_ref() else {
+            return 1;
+        };
+        let fs = self.picker.font_size();
+        let nat_h = sc.original.height().div_ceil(fs.height as u32) as f32;
+        ((nat_h / self.zoom) * 0.1).max(1.0) as i16
     }
 
     pub fn pan_left(&mut self) {
         self.pan_x -= self.pan_step_x();
         self.clamp_pan();
+        self.regenerate_zoom_protocol();
     }
     pub fn pan_right(&mut self) {
         self.pan_x += self.pan_step_x();
         self.clamp_pan();
+        self.regenerate_zoom_protocol();
     }
     pub fn pan_up(&mut self) {
         self.pan_y -= self.pan_step_y();
         self.clamp_pan();
+        self.regenerate_zoom_protocol();
     }
     pub fn pan_down(&mut self) {
         self.pan_y += self.pan_step_y();
         self.clamp_pan();
+        self.regenerate_zoom_protocol();
     }
 }
 
@@ -1210,30 +1262,25 @@ mod tests {
     fn pan_moves_in_correct_direction() {
         let mut app = make_app(1);
         app.state = AppState::Fullscreen;
-        // Use a small viewport so the protocol is larger and pan has room
-        app.fullscreen_image_w = 10;
-        app.fullscreen_image_h = 10;
-        let img = image::DynamicImage::new_rgba8(400, 400);
-        let picker = Picker::halfblocks();
-        let large_proto = picker
-            .new_protocol(
-                img.clone(),
-                Size::new(100, 100),
-                Resize::Fit(Some(FilterType::Lanczos3)),
-            )
-            .unwrap();
+        app.fullscreen_image_w = 80;
+        app.fullscreen_image_h = 40;
+        // Use large image so native resolution > viewport → pan room when zoomed
+        let img = image::DynamicImage::new_rgba8(4000, 3000);
+        app.picker = Picker::halfblocks();
         app.fullscreen_content = Some(FullscreenContent::Static(StaticContent {
-            protocol: large_proto,
+            protocol: make_protocol(), // placeholder
             original: img,
         }));
+        // Zoom in so pan has room (at zoom 1.0, full image visible → no pan room)
+        app.zoom_in(); // zoom = 1.25
 
         app.pan_right();
-        assert!(app.pan_x > 0);
+        assert!(app.pan_x > 0, "pan_right should increase pan_x");
         app.pan_left();
-        assert_eq!(app.pan_x, 0);
+        assert_eq!(app.pan_x, 0, "pan_left should return to 0");
         app.pan_down();
-        assert!(app.pan_y > 0);
+        assert!(app.pan_y > 0, "pan_down should increase pan_y");
         app.pan_up();
-        assert_eq!(app.pan_y, 0);
+        assert_eq!(app.pan_y, 0, "pan_up should return to 0");
     }
 }

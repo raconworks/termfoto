@@ -77,22 +77,13 @@ impl<'a> Widget for PreviewView<'a> {
         // --- Image area ---
         if let Some(proto) = self.app.current_fullscreen_protocol() {
             let proto_size = proto.size();
-            // Center the protocol in the image area, then apply pan offset
-            let center_x = (image_area.width as i16 - proto_size.width as i16) / 2;
-            let center_y = (image_area.height as i16 - proto_size.height as i16) / 2;
-            let offset_x = center_x - self.app.pan_x;
-            let offset_y = center_y - self.app.pan_y;
-
-            // Clamp render position to image_area bounds (prevent u16 underflow)
-            let render_x = (image_area.x as i16 + offset_x).max(image_area.x as i16) as u16;
-            let render_y = (image_area.y as i16 + offset_y).max(image_area.y as i16) as u16;
-            // Compute visible width/height (intersection of protocol with image_area)
-            let render_right = (image_area.x as i16 + image_area.width as i16)
-                .min(render_x as i16 + proto_size.width as i16);
-            let render_bottom = (image_area.y as i16 + image_area.height as i16)
-                .min(render_y as i16 + proto_size.height as i16);
-            let visible_w = (render_right - render_x as i16).max(0) as u16;
-            let visible_h = (render_bottom - render_y as i16).max(0) as u16;
+            // Center protocol in image area
+            let offset_x = (image_area.width.saturating_sub(proto_size.width) / 2) as i16;
+            let offset_y = (image_area.height.saturating_sub(proto_size.height) / 2) as i16;
+            let render_x = image_area.x.saturating_add_signed(offset_x);
+            let render_y = image_area.y.saturating_add_signed(offset_y);
+            let visible_w = proto_size.width.min(image_area.width);
+            let visible_h = proto_size.height.min(image_area.height);
 
             let render_area = Rect {
                 x: render_x,
@@ -100,14 +91,9 @@ impl<'a> Widget for PreviewView<'a> {
                 width: visible_w,
                 height: visible_h,
             };
-            let image = Image::new(proto);
-            // At zoom 1.0, let ratatui resize the protocol to fill the viewport.
-            // At other zoom levels, render at native protocol size clipped to viewport.
-            if (self.app.zoom - 1.0).abs() < f32::EPSILON {
-                image.render(render_area, buf);
-            } else {
-                image.allow_clipping(true).render(render_area, buf);
-            }
+            // Protocol is already sized to viewport via regenerate_zoom_protocol(),
+            // so no allow_clipping needed — just render centered.
+            Image::new(proto).render(render_area, buf);
         }
 
         // --- Info panel ---
