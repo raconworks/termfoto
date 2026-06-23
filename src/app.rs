@@ -1096,4 +1096,106 @@ mod tests {
         let expected = (first_match_idx + 1) % search.matches.len();
         assert_eq!(search.match_idx, expected);
     }
+
+    // ---- Zoom / Pan tests ----
+
+    #[test]
+    fn zoom_in_increases_zoom() {
+        let mut app = make_app(5);
+        app.state = AppState::Fullscreen;
+        app.zoom = 1.0;
+        app.zoom_in();
+        assert!((app.zoom - 1.25).abs() < 0.01);
+    }
+
+    #[test]
+    fn zoom_out_decreases_zoom() {
+        let mut app = make_app(5);
+        app.state = AppState::Fullscreen;
+        app.zoom = 2.0;
+        app.zoom_out();
+        assert!((app.zoom - 1.6).abs() < 0.01);
+    }
+
+    #[test]
+    fn zoom_clamped_to_max() {
+        let mut app = make_app(5);
+        app.state = AppState::Fullscreen;
+        app.zoom = 10.0;
+        app.zoom_in();
+        assert!((app.zoom - 10.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn zoom_clamped_to_min() {
+        let mut app = make_app(5);
+        app.state = AppState::Fullscreen;
+        app.zoom = 0.25;
+        app.zoom_out();
+        assert!((app.zoom - 0.25).abs() < 0.01);
+    }
+
+    #[test]
+    fn switching_image_resets_zoom_and_pan() {
+        let mut app = make_app(3);
+        app.state = AppState::Fullscreen;
+        app.zoom = 2.0;
+        app.pan_x = 5;
+        app.pan_y = 3;
+        app.fullscreen_next();
+        assert!((app.zoom - 1.0).abs() < 0.01);
+        assert_eq!(app.pan_x, 0);
+        assert_eq!(app.pan_y, 0);
+    }
+
+    #[test]
+    fn zoom_reset_sets_defaults() {
+        let mut app = make_app(1);
+        app.state = AppState::Fullscreen;
+        app.zoom = 3.0;
+        app.pan_x = 10;
+        app.pan_y = 5;
+        app.zoom_reset();
+        assert!((app.zoom - 1.0).abs() < 0.01);
+        assert_eq!(app.pan_x, 0);
+        assert_eq!(app.pan_y, 0);
+    }
+
+    #[test]
+    fn zoom_ignored_in_browser_mode() {
+        let mut app = make_app(5);
+        app.zoom_in();
+        assert!((app.zoom - 1.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn pan_moves_in_correct_direction() {
+        let mut app = make_app(1);
+        app.state = AppState::Fullscreen;
+        // Use a small viewport so the protocol is larger and pan has room
+        app.fullscreen_image_w = 10;
+        app.fullscreen_image_h = 10;
+        let img = image::DynamicImage::new_rgba8(400, 400);
+        let picker = Picker::halfblocks();
+        let large_proto = picker
+            .new_protocol(
+                img.clone(),
+                Size::new(100, 100),
+                Resize::Fit(Some(FilterType::Lanczos3)),
+            )
+            .unwrap();
+        app.fullscreen_content = Some(FullscreenContent::Static(StaticContent {
+            protocol: large_proto,
+            original: img,
+        }));
+
+        app.pan_right();
+        assert!(app.pan_x > 0);
+        app.pan_left();
+        assert_eq!(app.pan_x, 0);
+        app.pan_down();
+        assert!(app.pan_y > 0);
+        app.pan_up();
+        assert_eq!(app.pan_y, 0);
+    }
 }
