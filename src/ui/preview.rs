@@ -100,9 +100,14 @@ impl<'a> Widget for PreviewView<'a> {
                 width: visible_w,
                 height: visible_h,
             };
-            Image::new(proto)
-                .allow_clipping(true)
-                .render(render_area, buf);
+            let image = Image::new(proto);
+            // At zoom 1.0, let ratatui resize the protocol to fill the viewport.
+            // At other zoom levels, render at native protocol size clipped to viewport.
+            if (self.app.zoom - 1.0).abs() < f32::EPSILON {
+                image.render(render_area, buf);
+            } else {
+                image.allow_clipping(true).render(render_area, buf);
+            }
         }
 
         // --- Info panel ---

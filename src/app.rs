@@ -494,11 +494,13 @@ impl App {
         let FullscreenContent::Static(sc) = content else {
             return;
         };
-        if self.fullscreen_image_w == 0 || self.fullscreen_image_h == 0 {
-            return;
-        }
-        let new_w = ((self.fullscreen_image_w as f32) * self.zoom).max(1.0) as u16;
-        let new_h = ((self.fullscreen_image_h as f32) * self.zoom).max(1.0) as u16;
+        // Use image native terminal resolution as zoom base (1:1 pixel→cell mapping).
+        // This gives correct scale regardless of viewport size.
+        let fs = self.picker.font_size();
+        let nat_w = sc.original.width().div_ceil(fs.width as u32) as u16;
+        let nat_h = sc.original.height().div_ceil(fs.height as u32) as u16;
+        let new_w = ((nat_w as f32) * self.zoom).max(1.0) as u16;
+        let new_h = ((nat_h as f32) * self.zoom).max(1.0) as u16;
         let size = Size::new(new_w, new_h);
         if let Ok(protocol) = self.picker.new_protocol(
             sc.original.clone(),

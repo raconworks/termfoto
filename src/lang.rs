@@ -77,11 +77,11 @@ impl Lang {
     ) -> String {
         match self {
             Lang::Zh => format!(
-                " {} [{}/{}]  原图尺寸  ← → 切换  Enter/Esc/q 返回  L切换语言{}",
+                " {} [{}/{}]  +/-缩放 hjkl平移 0重置  ← → 切换  Enter/Esc/q 返回  L语言{}",
                 name, selected, total, status
             ),
             Lang::En => format!(
-                " {} [{}/{}]  original size  ← → prev/next  Enter/Esc/q back  L lang{}",
+                " {} [{}/{}]  +/- zoom hjkl pan 0 reset  ← → prev/next  Enter/Esc/q back  L lang{}",
                 name, selected, total, status
             ),
         }
