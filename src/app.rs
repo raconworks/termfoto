@@ -508,25 +508,36 @@ impl App {
         let target_px_h = ((vp_px_h as f32) * self.zoom).max(1.0) as u32;
 
         // Crop region from original image (centered, offset by pan).
-        // At zoom < 1.0 the crop is the full image; at zoom > 1.0 it's a sub-region.
+        // At zoom <= 1.0 the crop is the full image (skip cropping overhead).
+        // At zoom > 1.0 it's a sub-region.
         let crop_w = ((img_w as f32) / self.zoom).max(1.0).min(img_w as f32) as u32;
         let crop_h = ((img_h as f32) / self.zoom).max(1.0).min(img_h as f32) as u32;
         // Pan in pixels (pan is in terminal cells)
         let pan_px_x = (self.pan_x as f32 * fs.width as f32) as i32;
         let pan_px_y = (self.pan_y as f32 * fs.height as f32) as i32;
-        let crop_x = ((img_w.saturating_sub(crop_w)) as f32 / 2.0) as i32 + pan_px_x;
-        let crop_y = ((img_h.saturating_sub(crop_h)) as f32 / 2.0) as i32 + pan_px_y;
-        let crop_x = crop_x.max(0).min((img_w.saturating_sub(crop_w)) as i32) as u32;
-        let crop_y = crop_y.max(0).min((img_h.saturating_sub(crop_h)) as i32) as u32;
 
-        // Crop and resize to target pixel size
-        let cropped = sc.original.crop_imm(crop_x, crop_y, crop_w, crop_h);
-        let resized = image::imageops::resize(
-            &cropped,
-            target_px_w,
-            target_px_h,
-            image::imageops::FilterType::Lanczos3,
-        );
+        let resized = if (self.zoom - 1.0).abs() < f32::EPSILON {
+            // No crop needed — resize full image directly
+            image::imageops::resize(
+                &sc.original,
+                target_px_w,
+                target_px_h,
+                image::imageops::FilterType::Triangle,
+            )
+        } else {
+            let crop_x = ((img_w.saturating_sub(crop_w)) as f32 / 2.0) as i32 + pan_px_x;
+            let crop_y = ((img_h.saturating_sub(crop_h)) as f32 / 2.0) as i32 + pan_px_y;
+            let crop_x = crop_x.max(0).min((img_w.saturating_sub(crop_w)) as i32) as u32;
+            let crop_y = crop_y.max(0).min((img_h.saturating_sub(crop_h)) as i32) as u32;
+            // Crop and resize to target pixel size (use Triangle for speed)
+            let cropped = sc.original.crop_imm(crop_x, crop_y, crop_w, crop_h);
+            image::imageops::resize(
+                &cropped,
+                target_px_w,
+                target_px_h,
+                image::imageops::FilterType::Triangle,
+            )
+        };
         let resized_img = image::DynamicImage::ImageRgba8(resized);
 
         // Create protocol from resized image, fitting to viewport cell size.
