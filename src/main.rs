@@ -60,27 +60,26 @@ fn main() -> Result<()> {
 
     let path = arg1.map(PathBuf::from);
 
-    let (images, initial_state) = match path {
+    let (images, initial_state, selected) = match path {
         None => {
             let images = scan_directory(&std::env::current_dir()?)?;
-            (images, AppState::Browser)
+            (images, AppState::Browser, 0_usize)
         }
         Some(ref p) if p.is_dir() => {
             let images = scan_directory(p)?;
-            (images, AppState::Browser)
+            (images, AppState::Browser, 0_usize)
         }
         Some(ref p) if p.is_file() && scanner::is_supported_image(p) => {
-            let file_size = std::fs::metadata(p).map(|m| m.len()).unwrap_or(0);
-            let entry = scanner::ImageEntry {
-                path: p.clone(),
-                filename: p
-                    .file_name()
-                    .unwrap_or_default()
-                    .to_string_lossy()
-                    .into_owned(),
-                file_size,
-            };
-            (vec![entry], AppState::Fullscreen)
+            let parent = p.parent().unwrap_or_else(|| std::path::Path::new("."));
+            let images = scan_directory(parent)?;
+            // Find the index of the specified file in the scanned list.
+            // scan_directory normalises filenames so we compare by filename.
+            let target_name = p.file_name().and_then(|n| n.to_str()).unwrap_or("");
+            let selected = images
+                .iter()
+                .position(|e| e.filename == target_name)
+                .unwrap_or(0);
+            (images, AppState::Fullscreen, selected)
         }
         Some(ref p) => {
             eprintln!(
@@ -100,7 +99,7 @@ fn main() -> Result<()> {
     let backend = CrosstermBackend::new(io::stdout());
     let mut terminal = Terminal::new(backend)?;
 
-    run(&mut terminal, images, initial_state)
+    run(&mut terminal, images, initial_state, selected)
 }
 
 fn print_help() {
@@ -116,6 +115,7 @@ fn run(
     terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
     images: Vec<scanner::ImageEntry>,
     initial_state: AppState,
+    selected: usize,
 ) -> Result<()> {
     let picker = Picker::from_query_stdio().unwrap_or_else(|_| Picker::halfblocks());
 
@@ -123,7 +123,7 @@ fn run(
     let paths: Vec<PathBuf> = images.iter().map(|e| e.path.clone()).collect();
     let (load_tx, load_rx) = spawn_image_loader(picker.clone(), paths);
 
-    let mut app = App::new(images, initial_state, load_tx, load_rx, Lang::detect());
+    let mut app = App::new(images, initial_state, selected, load_tx, load_rx, Lang::detect());
 
     loop {
         let size = terminal.size()?;

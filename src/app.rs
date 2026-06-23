@@ -77,20 +77,23 @@ impl App {
     pub fn new(
         images: Vec<ImageEntry>,
         state: AppState,
+        selected: usize,
         load_tx: Sender<LoadRequest>,
         load_rx: Receiver<LoadResult>,
         lang: Lang,
     ) -> Self {
-        Self {
+        let selected = selected.min(images.len().saturating_sub(1));
+        let fullscreen_pending = state == AppState::Fullscreen;
+        let mut app = Self {
             state,
             images,
-            selected: 0,
+            selected,
             scroll_row: 0,
             protocol_cache: HashMap::new(),
             fullscreen_content: None,
             fullscreen_frame_idx: 0,
             fullscreen_next_frame_at: None,
-            fullscreen_pending: false,
+            fullscreen_pending,
             fullscreen_dims: None,
             cache_width: 0,
             cache_height: 0,
@@ -103,7 +106,13 @@ impl App {
             lang,
             load_tx,
             load_rx,
+        };
+        // If launched directly into fullscreen (e.g. "termfoto image.png"),
+        // immediately request the original-size load so the image appears.
+        if fullscreen_pending {
+            app.request_load(selected, LoadSize::Original);
         }
+        app
     }
 
     pub fn navigate_left(&mut self) {
@@ -592,7 +601,7 @@ mod tests {
             .collect();
         let (tx, _rx) = std::sync::mpsc::channel::<LoadRequest>();
         let (_tx2, rx2) = std::sync::mpsc::channel::<LoadResult>();
-        App::new(images, AppState::Browser, tx, rx2, Lang::Zh)
+        App::new(images, AppState::Browser, 0, tx, rx2, Lang::Zh)
     }
 
     fn make_app_with_load_rx(count: usize) -> (App, Receiver<LoadRequest>) {
@@ -605,7 +614,7 @@ mod tests {
             .collect();
         let (tx, rx) = std::sync::mpsc::channel::<LoadRequest>();
         let (_tx2, rx2) = std::sync::mpsc::channel::<LoadResult>();
-        (App::new(images, AppState::Browser, tx, rx2, Lang::Zh), rx)
+        (App::new(images, AppState::Browser, 0, tx, rx2, Lang::Zh), rx)
     }
 
     fn make_protocol() -> Protocol {
@@ -881,7 +890,7 @@ mod tests {
             .collect();
         let (tx, _rx) = std::sync::mpsc::channel::<LoadRequest>();
         let (_tx2, rx2) = std::sync::mpsc::channel::<LoadResult>();
-        App::new(images, AppState::Browser, tx, rx2, Lang::Zh)
+        App::new(images, AppState::Browser, 0, tx, rx2, Lang::Zh)
     }
 
     #[test]

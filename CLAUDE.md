@@ -5,15 +5,22 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## 构建与测试
 
 ```bash
-cargo build              # 编译
+cargo build              # debug 编译
 cargo run                # 运行（默认当前目录）
 cargo run -- <路径>      # 指定目录或图片文件
 cargo test               # 运行所有测试
-cargo test <测试名>      # 运行单个测试（模糊匹配）
-cargo build --release    # release 构建（启用 LTO + 单 codegen-unit + strip + panic=abort）
+cargo test <测试名>      # 运行单个测试（模糊匹配，如 cargo test animation）
+cargo build --release    # release 构建（lto="fat", codegen-units=1, opt-level="z", strip, panic="abort"）
 cargo clippy             # lint
 cargo fmt                # 格式化
 ```
+
+release profile 配置（`Cargo.toml`）：
+- `lto = "fat"` — 跨 crate 的激进链接时优化
+- `codegen-units = 1` — 单代码生成单元，最大化内联
+- `opt-level = "z"` — 优化体积
+- `strip = true` — 剥离符号表
+- `panic = "abort"` — panic 直接中止，减小体积
 
 ## 架构总览
 
@@ -23,12 +30,12 @@ termfoto 是一个终端图片浏览器——做一件事，做到极致。
 
 **两个状态** (`AppState`):
 - `Browser` — 动态列数网格 chafa 缩略图，居中显示，文件名居中，搜索高亮
-- `Fullscreen` — 3:1 分屏（左侧原图居中 + 右侧信息面板），底部 logo + 状态栏
+- `Fullscreen` — 3:1 分屏（左侧原图居中 + 右侧信息面板），底部 logo + 状态栏。自动检测动图（GIF/APNG/WebP）并循环播放
 
 **关键常量** (`app.rs`):
 - `MIN_CELL = 24` — 网格单元最小宽度，列数由终端宽度 / MIN_CELL 动态计算
-- `LOGO_HEIGHT = 6` — 终端宽度 ≥ 70 时显示，否则隐藏
-- `MIN_LOGO_WIDTH = 70` — 显示 logo 的最小终端宽度
+- `LOGO_HEIGHT = 3` — 紧凑 3 行 logo（右下角，每行不同彩虹色）
+- `MIN_LOGO_WIDTH = 70` — 终端宽度 ≥ 70 时显示紧凑 3 行 logo，否则隐藏
 - `MAX_CACHE_SIZE = 200` — Protocol 缓存上限，超出时淘汰最早一半条目
 
 **动态网格**（`main.rs` 事件循环）:
@@ -43,7 +50,7 @@ termfoto 是一个终端图片浏览器——做一件事，做到极致。
 | `src/main.rs` | CLI（手动解析）、`TermGuard` RAII 终端管理、事件循环、动态网格计算、Picker 初始化 |
 | `src/app.rs` | 导航、滚动、全屏切换、Protocol 缓存（含淘汰策略）、4 线程后台加载通道管理、按键分发 |
 | `src/lang.rs` | 中/英 UI 文本（状态栏、搜索提示、信息面板标签），L 键切换，$LANG 自动检测 |
-| `src/scanner.rs` | 目录扫描（不递归）、按文件名排序。识别 9 种格式（PNG/JPG/JPEG/WebP/GIF/BMP/TIFF/ICO），但 `image` crate 仅解码 PNG/JPEG/WebP |
+| `src/scanner.rs` | 目录扫描（不递归）、按文件名排序。识别 9 种格式（PNG/JPG/JPEG/WebP/GIF/BMP/TIFF/ICO），但非图片格式的文件在加载时会被跳过 |
 | `src/ui/mod.rs` | 状态分派 draw、彩虹渐变色 ASCII art logo 渲染（底部右对齐） |
 | `src/ui/browser.rs` | 动态列网格渲染：居中、缩略图懒加载（±1 行预取）、文件名截断+居中、搜索匹配字符高亮 |
 | `src/ui/preview.rs` | 全屏 3:1 分屏：左侧原图（`Image` widget 居中+裁剪）、右侧信息面板（文件/像素/大小/格式/路径） |
@@ -52,13 +59,14 @@ termfoto 是一个终端图片浏览器——做一件事，做到极致。
 **关键设计**：
 - **后台加载**：`spawn_image_loader()` 启动 4 个 worker 线程，每个线程从共享 channel 取 `LoadRequest`、执行 `image::open()` + `picker.new_protocol()`，主线程用 `try_recv()` 非阻塞收结果
 - **Browser Protocol 缓存**：`HashMap<usize, Protocol>` 懒加载可见行 ±1 行预取。终端 resize（宽高变化）时清空。超过 200 条时淘汰最早插入的一半
+- **全屏动图播放**：`FullscreenContent` 枚举区分静态 (`Static`) 与动画 (`Animation(Vec<AnimationFrame>)`)。支持 GIF、APNG、Animated WebP。帧上限 120，默认帧间隔 100ms，最小 20ms。`try_decode_animation()` 自动检测格式并解码帧序列。事件循环通过 `next_animation_deadline()` / `advance_animation()` 驱动帧切换，`event::poll(timeout)` 在无按键时等待下一帧到期
 - **居中渲染**：浏览器格内和全屏均计算 `offset = (area - proto_size) / 2` 居中放置
 - **搜索**：模糊匹配按得分排序（连续字符 + 靠前位置加分，间隔扣分），匹配字符在文件名中以黄色高亮
 
 **依赖**：
 - ratatui 0.30（TUI）+ crossterm 0.29（终端控制）
 - ratatui-image 11（chafa-dyn，图片→终端字符；default features 关闭）
-- image 0.25（图片解码，仅 PNG/JPEG/WebP features）
+- image 0.25（图片解码，PNG/JPEG/WebP/GIF features；GIF 用于动图支持）
 - anyhow 1（错误处理）
 - tempfile 3（仅 dev-dependencies，测试用）
 
