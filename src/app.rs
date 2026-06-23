@@ -25,8 +25,14 @@ pub struct AnimationFrame {
 }
 
 #[derive(Clone)]
+pub struct StaticContent {
+    pub protocol: Protocol,
+    pub original: image::DynamicImage,
+}
+
+#[derive(Clone)]
 pub enum FullscreenContent {
-    Static(Protocol),
+    Static(StaticContent),
     Animation(Vec<AnimationFrame>),
 }
 
@@ -223,7 +229,7 @@ impl App {
 
     pub fn current_fullscreen_protocol(&self) -> Option<&Protocol> {
         match self.fullscreen_content.as_ref()? {
-            FullscreenContent::Static(proto) => Some(proto),
+            FullscreenContent::Static(sc) => Some(&sc.protocol),
             FullscreenContent::Animation(frames) => frames
                 .get(self.fullscreen_frame_idx)
                 .or_else(|| frames.first())
@@ -426,7 +432,7 @@ pub struct LoadRequest {
 
 fn first_protocol(content: FullscreenContent) -> Protocol {
     match content {
-        FullscreenContent::Static(proto) => proto,
+        FullscreenContent::Static(sc) => sc.protocol,
         FullscreenContent::Animation(mut frames) => frames.remove(0).protocol,
     }
 }
@@ -461,7 +467,8 @@ fn static_original_content(
     img: image::DynamicImage,
     size: Size,
 ) -> Option<FullscreenContent> {
-    make_protocol(picker, img, size, FilterType::Lanczos3).map(FullscreenContent::Static)
+    let protocol = make_protocol(picker, img.clone(), size, FilterType::Lanczos3)?;
+    Some(FullscreenContent::Static(StaticContent { protocol, original: img }))
 }
 
 fn animation_content_from_frames<I>(
@@ -565,8 +572,8 @@ pub fn spawn_image_loader(
                         LoadSize::Original => try_decode_animation(&picker, path, protocol_size)
                             .or_else(|| static_original_content(&picker, img, protocol_size)),
                         LoadSize::Thumbnail { .. } => {
-                            make_protocol(&picker, img, protocol_size, filter)
-                                .map(FullscreenContent::Static)
+                            make_protocol(&picker, img.clone(), protocol_size, filter)
+                                .map(|protocol| FullscreenContent::Static(StaticContent { protocol, original: img }))
                         }
                     };
                     if let Some(content) = content {
