@@ -69,6 +69,12 @@ pub struct App {
     pub visible_rows: usize,
     pub requested: HashSet<(usize, LoadSize)>,
     pub search: Option<SearchState>,
+    pub zoom: f32,
+    pub pan_x: i16,
+    pub pan_y: i16,
+    pub picker: Picker,
+    pub fullscreen_image_w: u16,
+    pub fullscreen_image_h: u16,
     pub lang: Lang,
     load_tx: Sender<LoadRequest>,
     load_rx: Receiver<LoadResult>,
@@ -78,6 +84,9 @@ pub const MIN_CELL: u16 = 24;
 pub const LOGO_HEIGHT: u16 = 3;
 pub const MIN_LOGO_WIDTH: u16 = 70;
 const MAX_CACHE_SIZE: usize = 200;
+const ZOOM_STEP: f32 = 1.25;
+const ZOOM_MIN: f32 = 0.25;
+const ZOOM_MAX: f32 = 10.0;
 
 impl App {
     pub fn new(
@@ -87,6 +96,7 @@ impl App {
         load_tx: Sender<LoadRequest>,
         load_rx: Receiver<LoadResult>,
         lang: Lang,
+        picker: Picker,
     ) -> Self {
         let selected = selected.min(images.len().saturating_sub(1));
         let fullscreen_pending = state == AppState::Fullscreen;
@@ -109,6 +119,12 @@ impl App {
             visible_rows: 1,
             requested: HashSet::new(),
             search: None,
+            zoom: 1.0,
+            pan_x: 0,
+            pan_y: 0,
+            picker,
+            fullscreen_image_w: 0,
+            fullscreen_image_h: 0,
             lang,
             load_tx,
             load_rx,
@@ -184,6 +200,11 @@ impl App {
     pub fn exit_fullscreen(&mut self) {
         self.state = AppState::Browser;
         self.reset_fullscreen_content();
+        self.zoom = 1.0;
+        self.pan_x = 0;
+        self.pan_y = 0;
+        self.fullscreen_image_w = 0;
+        self.fullscreen_image_h = 0;
         self.fullscreen_pending = false;
     }
 
@@ -191,6 +212,11 @@ impl App {
         if self.selected > 0 {
             self.selected -= 1;
             self.reset_fullscreen_content();
+            self.zoom = 1.0;
+            self.pan_x = 0;
+            self.pan_y = 0;
+            self.fullscreen_image_w = 0;
+            self.fullscreen_image_h = 0;
             self.fullscreen_pending = true;
             self.request_load(self.selected, LoadSize::Original);
         }
@@ -200,6 +226,11 @@ impl App {
         if self.selected + 1 < self.images.len() {
             self.selected += 1;
             self.reset_fullscreen_content();
+            self.zoom = 1.0;
+            self.pan_x = 0;
+            self.pan_y = 0;
+            self.fullscreen_image_w = 0;
+            self.fullscreen_image_h = 0;
             self.fullscreen_pending = true;
             self.request_load(self.selected, LoadSize::Original);
         }
@@ -219,6 +250,9 @@ impl App {
         now: Instant,
     ) {
         self.fullscreen_frame_idx = 0;
+        self.zoom = 1.0;
+        self.pan_x = 0;
+        self.pan_y = 0;
         self.fullscreen_next_frame_at = match &content {
             FullscreenContent::Animation(frames) => frames.first().map(|frame| now + frame.delay),
             FullscreenContent::Static(_) => None,
@@ -411,6 +445,102 @@ impl App {
             }
             SearchAction::Continue => false,
         }
+    }
+
+    /// 放大，上限 ZOOM_MAX
+    pub fn zoom_in(&mut self) {
+        if self.state != AppState::Fullscreen {
+            return;
+        }
+        self.set_zoom((self.zoom * ZOOM_STEP).min(ZOOM_MAX));
+    }
+
+    /// 缩小，下限 ZOOM_MIN
+    pub fn zoom_out(&mut self) {
+        if self.state != AppState::Fullscreen {
+            return;
+        }
+        self.set_zoom((self.zoom / ZOOM_STEP).max(ZOOM_MIN));
+    }
+
+    /// 重置缩放与平移
+    pub fn zoom_reset(&mut self) {
+        if self.state != AppState::Fullscreen {
+            return;
+        }
+        self.zoom = 1.0;
+        self.pan_x = 0;
+        self.pan_y = 0;
+        self.regenerate_zoom_protocol();
+    }
+
+    fn set_zoom(&mut self, zoom: f32) {
+        self.zoom = zoom;
+        self.regenerate_zoom_protocol();
+    }
+
+    /// 用缓存原始图像以当前缩放级别重新生成协议
+    fn regenerate_zoom_protocol(&mut self) {
+        let Some(content) = self.fullscreen_content.as_mut() else {
+            return;
+        };
+        let FullscreenContent::Static(sc) = content else {
+            return;
+        };
+        if self.fullscreen_image_w == 0 || self.fullscreen_image_h == 0 {
+            return;
+        }
+        let new_w = ((self.fullscreen_image_w as f32) * self.zoom).max(1.0) as u16;
+        let new_h = ((self.fullscreen_image_h as f32) * self.zoom).max(1.0) as u16;
+        let size = Size::new(new_w, new_h);
+        if let Ok(protocol) = self.picker.new_protocol(
+            sc.original.clone(),
+            size,
+            Resize::Fit(Some(FilterType::Lanczos3)),
+        ) {
+            sc.protocol = protocol;
+        }
+        self.clamp_pan();
+    }
+
+    /// 平移后钳制到图片边界
+    fn clamp_pan(&mut self) {
+        let Some(proto) = self.current_fullscreen_protocol() else {
+            return;
+        };
+        let pw = proto.size().width as i16;
+        let ph = proto.size().height as i16;
+        let vw = self.fullscreen_image_w as i16;
+        let vh = self.fullscreen_image_h as i16;
+        let max_x = ((pw - vw).max(0) / 2).max(0);
+        let max_y = ((ph - vh).max(0) / 2).max(0);
+        self.pan_x = self.pan_x.clamp(-max_x, max_x);
+        self.pan_y = self.pan_y.clamp(-max_y, max_y);
+    }
+
+    fn pan_step_x(&self) -> i16 {
+        ((self.fullscreen_image_w as f32) * 0.1).max(1.0) as i16
+    }
+
+    fn pan_step_y(&self) -> i16 {
+        ((self.fullscreen_image_h as f32) * 0.1).max(1.0) as i16
+    }
+
+    pub fn pan_left(&mut self) {
+        self.pan_x -= self.pan_step_x();
+        self.clamp_pan();
+    }
+    pub fn pan_right(&mut self) {
+        self.pan_x += self.pan_step_x();
+        self.clamp_pan();
+    }
+    pub fn pan_up(&mut self) {
+        self.pan_y -= self.pan_step_y();
+        self.clamp_pan();
+    }
+    pub fn pan_down(&mut self) {
+        self.pan_y += self.pan_step_y();
+        self.clamp_pan();
     }
 }
 
@@ -608,7 +738,7 @@ mod tests {
             .collect();
         let (tx, _rx) = std::sync::mpsc::channel::<LoadRequest>();
         let (_tx2, rx2) = std::sync::mpsc::channel::<LoadResult>();
-        App::new(images, AppState::Browser, 0, tx, rx2, Lang::Zh)
+        App::new(images, AppState::Browser, 0, tx, rx2, Lang::Zh, Picker::halfblocks())
     }
 
     fn make_app_with_load_rx(count: usize) -> (App, Receiver<LoadRequest>) {
@@ -621,7 +751,7 @@ mod tests {
             .collect();
         let (tx, rx) = std::sync::mpsc::channel::<LoadRequest>();
         let (_tx2, rx2) = std::sync::mpsc::channel::<LoadResult>();
-        (App::new(images, AppState::Browser, 0, tx, rx2, Lang::Zh), rx)
+        (App::new(images, AppState::Browser, 0, tx, rx2, Lang::Zh, Picker::halfblocks()), rx)
     }
 
     fn make_protocol() -> Protocol {
@@ -897,7 +1027,7 @@ mod tests {
             .collect();
         let (tx, _rx) = std::sync::mpsc::channel::<LoadRequest>();
         let (_tx2, rx2) = std::sync::mpsc::channel::<LoadResult>();
-        App::new(images, AppState::Browser, 0, tx, rx2, Lang::Zh)
+        App::new(images, AppState::Browser, 0, tx, rx2, Lang::Zh, Picker::halfblocks())
     }
 
     #[test]
