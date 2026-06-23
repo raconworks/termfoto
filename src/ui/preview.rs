@@ -10,7 +10,7 @@ use ratatui::{
 use ratatui_image::Image;
 
 pub struct PreviewView<'a> {
-    pub app: &'a App,
+    pub app: &'a mut App,
 }
 
 struct PreviewAreas {
@@ -70,18 +70,37 @@ impl<'a> Widget for PreviewView<'a> {
             ..main_area
         };
 
+        // Record viewport size for zoom calculations
+        self.app.fullscreen_image_w = image_area.width;
+        self.app.fullscreen_image_h = image_area.height;
+
         // --- Image area ---
         if let Some(proto) = self.app.current_fullscreen_protocol() {
             let proto_size = proto.size();
-            let offset_x = image_area.width.saturating_sub(proto_size.width) / 2;
-            let offset_y = image_area.height.saturating_sub(proto_size.height) / 2;
-            let centered = Rect {
-                x: image_area.x + offset_x,
-                y: image_area.y + offset_y,
-                width: proto_size.width.min(image_area.width),
-                height: proto_size.height.min(image_area.height),
+            // Center the protocol in the image area, then apply pan offset
+            let center_x = (image_area.width as i16 - proto_size.width as i16) / 2;
+            let center_y = (image_area.height as i16 - proto_size.height as i16) / 2;
+            let offset_x = center_x - self.app.pan_x;
+            let offset_y = center_y - self.app.pan_y;
+
+            // Clamp render position to image_area bounds (prevent u16 underflow)
+            let render_x = (image_area.x as i16 + offset_x).max(image_area.x as i16) as u16;
+            let render_y = (image_area.y as i16 + offset_y).max(image_area.y as i16) as u16;
+            // Compute visible width/height (intersection of protocol with image_area)
+            let render_right = (image_area.x as i16 + image_area.width as i16)
+                .min(render_x as i16 + proto_size.width as i16);
+            let render_bottom = (image_area.y as i16 + image_area.height as i16)
+                .min(render_y as i16 + proto_size.height as i16);
+            let visible_w = (render_right - render_x as i16).max(0) as u16;
+            let visible_h = (render_bottom - render_y as i16).max(0) as u16;
+
+            let render_area = Rect {
+                x: render_x,
+                y: render_y,
+                width: visible_w,
+                height: visible_h,
             };
-            Image::new(proto).allow_clipping(true).render(centered, buf);
+            Image::new(proto).allow_clipping(true).render(render_area, buf);
         }
 
         // --- Info panel ---
@@ -139,15 +158,17 @@ impl<'a> Widget for PreviewView<'a> {
         // --- Status bar ---
         if let Some(entry) = self.app.images.get(self.app.selected) {
             let status = if self.app.fullscreen_pending {
-                self.app.lang.loading_text()
+                self.app.lang.loading_text().to_string()
+            } else if (self.app.zoom - 1.0).abs() > f32::EPSILON {
+                format!(" [{:.0}%]", self.app.zoom * 100.0)
             } else {
-                ""
+                String::new()
             };
             let info = self.app.lang.preview_status(
                 &entry.filename,
                 self.app.selected + 1,
                 self.app.images.len(),
-                status,
+                &status,
             );
             let span = Span::styled(info, Style::default().fg(Color::White).bg(Color::DarkGray));
             Paragraph::new(span)
