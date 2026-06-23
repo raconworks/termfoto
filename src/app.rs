@@ -411,9 +411,16 @@ impl App {
             AppState::Fullscreen => match code {
                 KeyCode::Char('q') | KeyCode::Esc | KeyCode::Enter => self.exit_fullscreen(),
                 KeyCode::Char('c') if modifiers.contains(KeyModifiers::CONTROL) => return true,
-                KeyCode::Char('L') | KeyCode::Char('l') => {
+                KeyCode::Char('L') => {
                     self.lang.toggle();
                 }
+                KeyCode::Char('+') | KeyCode::Char('=') => self.zoom_in(),
+                KeyCode::Char('-') => self.zoom_out(),
+                KeyCode::Char('0') => self.zoom_reset(),
+                KeyCode::Char('h') => self.pan_left(),
+                KeyCode::Char('l') => self.pan_right(),
+                KeyCode::Char('k') => self.pan_up(),
+                KeyCode::Char('j') => self.pan_down(),
                 KeyCode::Left => self.fullscreen_prev(),
                 KeyCode::Right => self.fullscreen_next(),
                 _ => {}
