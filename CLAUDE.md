@@ -30,13 +30,14 @@ termfoto 是一个终端图片浏览器——做一件事，做到极致。
 
 **两个状态** (`AppState`):
 - `Browser` — 动态列数网格 chafa 缩略图，居中显示，文件名居中，搜索高亮
-- `Fullscreen` — 3:1 分屏（左侧原图居中 + 右侧信息面板），底部 logo + 状态栏。自动检测动图（GIF/APNG/WebP）并循环播放
+- `Fullscreen` — 3:1 分屏（左侧原图居中 + 右侧信息面板），底部 logo + 状态栏。自动检测动图（GIF/APNG/WebP）并循环播放。`+`/`-` 缩放（0.25×~10×，步长 1.25×），`h` `j` `k` `l` 平移，`0` 重置，动图忽略缩放
 
 **关键常量** (`app.rs`):
 - `MIN_CELL = 24` — 网格单元最小宽度，列数由终端宽度 / MIN_CELL 动态计算
 - `LOGO_HEIGHT = 3` — 紧凑 3 行 logo（右下角，每行不同彩虹色）
 - `MIN_LOGO_WIDTH = 70` — 终端宽度 ≥ 70 时显示紧凑 3 行 logo，否则隐藏
 - `MAX_CACHE_SIZE = 200` — Protocol 缓存上限，超出时淘汰最早一半条目
+- `ZOOM_STEP = 1.25`, `ZOOM_MIN = 0.25`, `ZOOM_MAX = 10.0` — 缩放参数
 
 **动态网格**（`main.rs` 事件循环）:
 - `cols = term_width / MIN_CELL`，最少 2 列
@@ -60,6 +61,7 @@ termfoto 是一个终端图片浏览器——做一件事，做到极致。
 - **后台加载**：`spawn_image_loader()` 启动 4 个 worker 线程，每个线程从共享 channel 取 `LoadRequest`、执行 `image::open()` + `picker.new_protocol()`，主线程用 `try_recv()` 非阻塞收结果
 - **Browser Protocol 缓存**：`HashMap<usize, Protocol>` 懒加载可见行 ±1 行预取。终端 resize（宽高变化）时清空。超过 200 条时淘汰最早插入的一半
 - **全屏动图播放**：`FullscreenContent` 枚举区分静态 (`Static`) 与动画 (`Animation(Vec<AnimationFrame>)`)。支持 GIF、APNG、Animated WebP。帧上限 120，默认帧间隔 100ms，最小 20ms。`try_decode_animation()` 自动检测格式并解码帧序列。事件循环通过 `next_animation_deadline()` / `advance_animation()` 驱动帧切换，`event::poll(timeout)` 在无按键时等待下一帧到期
+- **全屏缩放**：`StaticContent` 持有原始 `DynamicImage` 用于缩放时重新生成协议（`picker.new_protocol()`）。缩放范围 0.25×~10×，步长 1.25×。切换图片自动重置。动图忽略缩放。`PreviewView` 渲染时记录视口尺寸并应用 pan 偏移，`allow_clipping(true)` 裁剪超界部分
 - **居中渲染**：浏览器格内和全屏均计算 `offset = (area - proto_size) / 2` 居中放置
 - **搜索**：模糊匹配按得分排序（连续字符 + 靠前位置加分，间隔扣分），匹配字符在文件名中以黄色高亮
 

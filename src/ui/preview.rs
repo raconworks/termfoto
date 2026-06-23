@@ -100,7 +100,9 @@ impl<'a> Widget for PreviewView<'a> {
                 width: visible_w,
                 height: visible_h,
             };
-            Image::new(proto).allow_clipping(true).render(render_area, buf);
+            Image::new(proto)
+                .allow_clipping(true)
+                .render(render_area, buf);
         }
 
         // --- Info panel ---

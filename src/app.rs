@@ -605,7 +605,10 @@ fn static_original_content(
     size: Size,
 ) -> Option<FullscreenContent> {
     let protocol = make_protocol(picker, img.clone(), size, FilterType::Lanczos3)?;
-    Some(FullscreenContent::Static(StaticContent { protocol, original: img }))
+    Some(FullscreenContent::Static(StaticContent {
+        protocol,
+        original: img,
+    }))
 }
 
 fn animation_content_from_frames<I>(
@@ -709,8 +712,14 @@ pub fn spawn_image_loader(
                         LoadSize::Original => try_decode_animation(&picker, path, protocol_size)
                             .or_else(|| static_original_content(&picker, img, protocol_size)),
                         LoadSize::Thumbnail { .. } => {
-                            make_protocol(&picker, img.clone(), protocol_size, filter)
-                                .map(|protocol| FullscreenContent::Static(StaticContent { protocol, original: img }))
+                            make_protocol(&picker, img.clone(), protocol_size, filter).map(
+                                |protocol| {
+                                    FullscreenContent::Static(StaticContent {
+                                        protocol,
+                                        original: img,
+                                    })
+                                },
+                            )
                         }
                     };
                     if let Some(content) = content {
@@ -745,7 +754,15 @@ mod tests {
             .collect();
         let (tx, _rx) = std::sync::mpsc::channel::<LoadRequest>();
         let (_tx2, rx2) = std::sync::mpsc::channel::<LoadResult>();
-        App::new(images, AppState::Browser, 0, tx, rx2, Lang::Zh, Picker::halfblocks())
+        App::new(
+            images,
+            AppState::Browser,
+            0,
+            tx,
+            rx2,
+            Lang::Zh,
+            Picker::halfblocks(),
+        )
     }
 
     fn make_app_with_load_rx(count: usize) -> (App, Receiver<LoadRequest>) {
@@ -758,7 +775,18 @@ mod tests {
             .collect();
         let (tx, rx) = std::sync::mpsc::channel::<LoadRequest>();
         let (_tx2, rx2) = std::sync::mpsc::channel::<LoadResult>();
-        (App::new(images, AppState::Browser, 0, tx, rx2, Lang::Zh, Picker::halfblocks()), rx)
+        (
+            App::new(
+                images,
+                AppState::Browser,
+                0,
+                tx,
+                rx2,
+                Lang::Zh,
+                Picker::halfblocks(),
+            ),
+            rx,
+        )
     }
 
     fn make_protocol() -> Protocol {
@@ -1034,7 +1062,15 @@ mod tests {
             .collect();
         let (tx, _rx) = std::sync::mpsc::channel::<LoadRequest>();
         let (_tx2, rx2) = std::sync::mpsc::channel::<LoadResult>();
-        App::new(images, AppState::Browser, 0, tx, rx2, Lang::Zh, Picker::halfblocks())
+        App::new(
+            images,
+            AppState::Browser,
+            0,
+            tx,
+            rx2,
+            Lang::Zh,
+            Picker::halfblocks(),
+        )
     }
 
     #[test]
