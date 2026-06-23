@@ -161,6 +161,9 @@ fn run(
         app.collect_loads();
         app.advance_animation(Instant::now());
 
+        // Regenerate zoom protocol if dirty (batches rapid zoom/pan keystrokes)
+        app.regenerate_if_dirty();
+
         // Render
         terminal.draw(|f| ui::draw(f, &mut app, cell_w, cell_h))?;
 
@@ -171,14 +174,25 @@ fn run(
             .min(Duration::from_millis(50));
 
         if event::poll(poll_timeout)? {
-            if let Event::Key(key) = event::read()? {
-                if key.kind != KeyEventKind::Press {
-                    continue;
+            let mut should_quit = false;
+            // Drain all pending events so rapid zoom/pan keystrokes are
+            // batched into a single protocol regeneration.
+            loop {
+                if let Event::Key(key) = event::read()? {
+                    if key.kind != KeyEventKind::Press {
+                        continue;
+                    }
+                    if app.handle_key(key.code, key.modifiers) {
+                        should_quit = true;
+                    }
                 }
-                let should_quit = app.handle_key(key.code, key.modifiers);
-                if should_quit {
+                // No more events queued
+                if should_quit || !event::poll(Duration::ZERO)? {
                     break;
                 }
+            }
+            if should_quit {
+                break;
             }
         }
     }

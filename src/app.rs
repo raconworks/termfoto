@@ -75,6 +75,7 @@ pub struct App {
     pub picker: Picker,
     pub fullscreen_image_w: u16,
     pub fullscreen_image_h: u16,
+    zoom_dirty: bool,
     pub lang: Lang,
     load_tx: Sender<LoadRequest>,
     load_rx: Receiver<LoadResult>,
@@ -125,6 +126,7 @@ impl App {
             picker,
             fullscreen_image_w: 0,
             fullscreen_image_h: 0,
+            zoom_dirty: false,
             lang,
             load_tx,
             load_rx,
@@ -478,12 +480,20 @@ impl App {
         self.zoom = 1.0;
         self.pan_x = 0;
         self.pan_y = 0;
-        self.regenerate_zoom_protocol();
+        self.zoom_dirty = true;
     }
 
     fn set_zoom(&mut self, zoom: f32) {
         self.zoom = zoom;
-        self.regenerate_zoom_protocol();
+        self.zoom_dirty = true;
+    }
+
+    /// 如果缩放/平移状态已变更，重新生成协议。应在渲染前调用。
+    pub fn regenerate_if_dirty(&mut self) {
+        if self.zoom_dirty {
+            self.regenerate_zoom_protocol();
+            self.zoom_dirty = false;
+        }
     }
 
     /// 用缓存原始图像以当前缩放级别重新生成协议。
@@ -597,22 +607,22 @@ impl App {
     pub fn pan_left(&mut self) {
         self.pan_x -= self.pan_step_x();
         self.clamp_pan();
-        self.regenerate_zoom_protocol();
+        self.zoom_dirty = true;
     }
     pub fn pan_right(&mut self) {
         self.pan_x += self.pan_step_x();
         self.clamp_pan();
-        self.regenerate_zoom_protocol();
+        self.zoom_dirty = true;
     }
     pub fn pan_up(&mut self) {
         self.pan_y -= self.pan_step_y();
         self.clamp_pan();
-        self.regenerate_zoom_protocol();
+        self.zoom_dirty = true;
     }
     pub fn pan_down(&mut self) {
         self.pan_y += self.pan_step_y();
         self.clamp_pan();
-        self.regenerate_zoom_protocol();
+        self.zoom_dirty = true;
     }
 }
 
