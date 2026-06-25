@@ -1,14 +1,22 @@
 use std::collections::{HashMap, HashSet};
 use std::fs::File;
 use std::io::BufReader;
+use std::num::NonZeroUsize;
 use std::path::Path;
-use std::sync::mpsc::{Receiver, Sender};
+use std::sync::{
+    mpsc::{Receiver, Sender},
+    Arc,
+};
 use std::time::{Duration, Instant};
 
 use crossterm::event::{KeyCode, KeyModifiers};
+use fast_image_resize as fir;
 use image::AnimationDecoder;
+use lru::LruCache;
 use ratatui::layout::Size;
-use ratatui_image::{picker::Picker, protocol::Protocol, FilterType, Resize};
+use ratatui_image::{
+    picker::Picker, protocol::Protocol, FilterType as ProtocolFilterType, FontSize, Resize,
+};
 
 use crate::lang::Lang;
 use crate::scanner::ImageEntry;
@@ -26,8 +34,8 @@ pub struct AnimationFrame {
 
 #[derive(Clone)]
 pub struct StaticContent {
-    pub protocol: Protocol,
-    pub original: image::DynamicImage,
+    pub protocol: Option<Protocol>,
+    pub original: Arc<image::DynamicImage>,
 }
 
 #[derive(Clone)]
@@ -76,6 +84,14 @@ pub struct App {
     pub fullscreen_image_w: u16,
     pub fullscreen_image_h: u16,
     zoom_dirty: bool,
+    render_generation: u64,
+    render_settle_deadline: Option<Instant>,
+    fullscreen_protocol_key: Option<RenderKey>,
+    fullscreen_original_cache: LruCache<usize, CachedOriginal>,
+    fullscreen_original_cache_bytes: usize,
+    fullscreen_render_cache: LruCache<RenderKey, Protocol>,
+    render_tx: Sender<RenderRequest>,
+    render_rx: Receiver<RenderResult>,
     pub lang: Lang,
     load_tx: Sender<LoadRequest>,
     load_rx: Receiver<LoadResult>,
@@ -85,9 +101,130 @@ pub const MIN_CELL: u16 = 24;
 pub const LOGO_HEIGHT: u16 = 3;
 pub const MIN_LOGO_WIDTH: u16 = 70;
 const MAX_CACHE_SIZE: usize = 200;
-const ZOOM_STEP: f32 = 1.25;
-const ZOOM_MIN: f32 = 0.25;
+const ZOOM_STEP: f32 = 0.10;
+const ZOOM_MIN: f32 = 1.0;
 const ZOOM_MAX: f32 = 10.0;
+const FULLSCREEN_ORIGINAL_CACHE_BYTES: usize = 128 * 1024 * 1024;
+const FULLSCREEN_RENDER_CACHE_SIZE: usize = 8;
+const INTERACTIVE_SETTLE_DELAY: Duration = Duration::from_millis(120);
+const DIRECT_FINAL_RENDER_PIXELS: u64 = 1_000_000;
+
+struct ZoomRenderGeometry {
+    crop_x: u32,
+    crop_y: u32,
+    crop_w: u32,
+    crop_h: u32,
+    target_px_w: u32,
+    target_px_h: u32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+enum RenderQuality {
+    Interactive,
+    Final,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct RenderKey {
+    idx: usize,
+    viewport_w: u16,
+    viewport_h: u16,
+    font_w: u16,
+    font_h: u16,
+    zoom_percent: u16,
+    pan_x: i16,
+    pan_y: i16,
+    quality: RenderQuality,
+}
+
+impl RenderKey {
+    fn same_view(&self, other: &Self) -> bool {
+        self.idx == other.idx
+            && self.viewport_w == other.viewport_w
+            && self.viewport_h == other.viewport_h
+            && self.font_w == other.font_w
+            && self.font_h == other.font_h
+            && self.zoom_percent == other.zoom_percent
+            && self.pan_x == other.pan_x
+            && self.pan_y == other.pan_y
+    }
+}
+
+#[derive(Clone)]
+struct CachedOriginal {
+    image: Arc<image::DynamicImage>,
+    bytes: usize,
+}
+
+struct RenderRequest {
+    idx: usize,
+    image: Arc<image::DynamicImage>,
+    viewport: Size,
+    font_size: FontSize,
+    zoom: f32,
+    pan_x: i16,
+    pan_y: i16,
+    key: RenderKey,
+    generation: u64,
+}
+
+struct RenderResult {
+    idx: usize,
+    protocol: Protocol,
+    key: RenderKey,
+    generation: u64,
+}
+
+fn zoom_render_geometry(
+    img_w: u32,
+    img_h: u32,
+    viewport_px_w: u32,
+    viewport_px_h: u32,
+    zoom: f32,
+    pan_px_x: i32,
+    pan_px_y: i32,
+) -> ZoomRenderGeometry {
+    let img_w = img_w.max(1);
+    let img_h = img_h.max(1);
+    let viewport_px_w = viewport_px_w.max(1);
+    let viewport_px_h = viewport_px_h.max(1);
+    let zoom = if zoom.is_finite() && zoom > 0.0 {
+        zoom
+    } else {
+        1.0
+    };
+
+    let crop_scale = zoom.max(1.0);
+    let crop_w = ((img_w as f32) / crop_scale).max(1.0).min(img_w as f32) as u32;
+    let crop_h = ((img_h as f32) / crop_scale).max(1.0).min(img_h as f32) as u32;
+
+    let max_crop_x = img_w.saturating_sub(crop_w);
+    let max_crop_y = img_h.saturating_sub(crop_h);
+    let crop_x = ((max_crop_x as f32 / 2.0) as i32 + pan_px_x).clamp(0, max_crop_x as i32) as u32;
+    let crop_y = ((max_crop_y as f32 / 2.0) as i32 + pan_px_y).clamp(0, max_crop_y as i32) as u32;
+
+    let fit_scale = (viewport_px_w as f32 / crop_w as f32)
+        .min(viewport_px_h as f32 / crop_h as f32)
+        .max(f32::EPSILON);
+    let target_scale = fit_scale * zoom.min(1.0);
+    let target_px_w = ((crop_w as f32) * target_scale)
+        .round()
+        .min(viewport_px_w as f32)
+        .max(1.0) as u32;
+    let target_px_h = ((crop_h as f32) * target_scale)
+        .round()
+        .min(viewport_px_h as f32)
+        .max(1.0) as u32;
+
+    ZoomRenderGeometry {
+        crop_x,
+        crop_y,
+        crop_w,
+        crop_h,
+        target_px_w,
+        target_px_h,
+    }
+}
 
 impl App {
     pub fn new(
@@ -101,6 +238,7 @@ impl App {
     ) -> Self {
         let selected = selected.min(images.len().saturating_sub(1));
         let fullscreen_pending = state == AppState::Fullscreen;
+        let (render_tx, render_rx) = spawn_render_worker(picker.clone());
         let mut app = Self {
             state,
             images,
@@ -127,14 +265,24 @@ impl App {
             fullscreen_image_w: 0,
             fullscreen_image_h: 0,
             zoom_dirty: false,
+            render_generation: 0,
+            render_settle_deadline: None,
+            fullscreen_protocol_key: None,
+            fullscreen_original_cache: LruCache::unbounded(),
+            fullscreen_original_cache_bytes: 0,
+            fullscreen_render_cache: LruCache::new(
+                NonZeroUsize::new(FULLSCREEN_RENDER_CACHE_SIZE).unwrap(),
+            ),
+            render_tx,
+            render_rx,
             lang,
             load_tx,
             load_rx,
         };
         // If launched directly into fullscreen (e.g. "termfoto image.png"),
-        // immediately request the original-size load so the image appears.
+        // immediately request the original load so the image appears.
         if fullscreen_pending {
-            app.request_load(selected, LoadSize::Original);
+            app.prepare_fullscreen_selection();
         }
         app
     }
@@ -194,8 +342,7 @@ impl App {
         if !self.images.is_empty() {
             self.state = AppState::Fullscreen;
             self.reset_fullscreen_content();
-            self.fullscreen_pending = true;
-            self.request_load(self.selected, LoadSize::Original);
+            self.prepare_fullscreen_selection();
         }
     }
 
@@ -208,6 +355,7 @@ impl App {
         self.fullscreen_image_w = 0;
         self.fullscreen_image_h = 0;
         self.fullscreen_pending = false;
+        self.render_settle_deadline = None;
     }
 
     pub fn fullscreen_prev(&mut self) {
@@ -219,8 +367,7 @@ impl App {
             self.pan_y = 0;
             self.fullscreen_image_w = 0;
             self.fullscreen_image_h = 0;
-            self.fullscreen_pending = true;
-            self.request_load(self.selected, LoadSize::Original);
+            self.prepare_fullscreen_selection();
         }
     }
 
@@ -233,8 +380,7 @@ impl App {
             self.pan_y = 0;
             self.fullscreen_image_w = 0;
             self.fullscreen_image_h = 0;
-            self.fullscreen_pending = true;
-            self.request_load(self.selected, LoadSize::Original);
+            self.prepare_fullscreen_selection();
         }
     }
 
@@ -243,6 +389,48 @@ impl App {
         self.fullscreen_frame_idx = 0;
         self.fullscreen_next_frame_at = None;
         self.fullscreen_dims = None;
+        self.zoom_dirty = false;
+        self.render_settle_deadline = None;
+        self.fullscreen_protocol_key = None;
+        self.render_generation = self.render_generation.wrapping_add(1);
+    }
+
+    fn prepare_fullscreen_selection(&mut self) {
+        if self.show_cached_fullscreen_original(Instant::now()) {
+            self.fullscreen_pending = self.current_fullscreen_protocol().is_none();
+        } else {
+            self.fullscreen_pending = true;
+            self.request_load(self.selected, LoadSize::Original);
+        }
+        self.prefetch_fullscreen_neighbors();
+    }
+
+    fn show_cached_fullscreen_original(&mut self, now: Instant) -> bool {
+        let Some(image) = self.cached_fullscreen_original(self.selected) else {
+            return false;
+        };
+        let dims = Some((image.width(), image.height()));
+        self.set_fullscreen_content(
+            FullscreenContent::Static(StaticContent {
+                protocol: None,
+                original: image,
+            }),
+            dims,
+            now,
+        );
+        true
+    }
+
+    fn prefetch_fullscreen_neighbors(&mut self) {
+        if self.images.is_empty() {
+            return;
+        }
+        if self.selected > 0 {
+            self.request_load(self.selected - 1, LoadSize::Original);
+        }
+        if self.selected + 1 < self.images.len() {
+            self.request_load(self.selected + 1, LoadSize::Original);
+        }
     }
 
     pub fn set_fullscreen_content(
@@ -255,17 +443,34 @@ impl App {
         self.zoom = 1.0;
         self.pan_x = 0;
         self.pan_y = 0;
+        let is_static = matches!(&content, FullscreenContent::Static(_));
         self.fullscreen_next_frame_at = match &content {
             FullscreenContent::Animation(frames) => frames.first().map(|frame| now + frame.delay),
             FullscreenContent::Static(_) => None,
         };
         self.fullscreen_content = Some(content);
         self.fullscreen_dims = dims;
+        self.fullscreen_protocol_key = None;
+        if is_static {
+            self.mark_render_dirty();
+        } else {
+            self.zoom_dirty = false;
+            self.render_settle_deadline = None;
+        }
+    }
+
+    pub fn set_fullscreen_viewport(&mut self, width: u16, height: u16) {
+        let changed = self.fullscreen_image_w != width || self.fullscreen_image_h != height;
+        self.fullscreen_image_w = width;
+        self.fullscreen_image_h = height;
+        if changed && matches!(self.fullscreen_content, Some(FullscreenContent::Static(_))) {
+            self.mark_render_dirty();
+        }
     }
 
     pub fn current_fullscreen_protocol(&self) -> Option<&Protocol> {
         match self.fullscreen_content.as_ref()? {
-            FullscreenContent::Static(sc) => Some(&sc.protocol),
+            FullscreenContent::Static(sc) => sc.protocol.as_ref(),
             FullscreenContent::Animation(frames) => frames
                 .get(self.fullscreen_frame_idx)
                 .or_else(|| frames.first())
@@ -310,9 +515,19 @@ impl App {
         true
     }
 
+    pub fn next_render_deadline(&self) -> Option<Instant> {
+        self.render_settle_deadline
+    }
+
+    fn mark_render_dirty(&mut self) {
+        self.zoom_dirty = true;
+        self.render_settle_deadline = None;
+        self.render_generation = self.render_generation.wrapping_add(1);
+    }
+
     /// Check for completed background image loads.
     /// In Browser mode, results go into protocol_cache.
-    /// In Fullscreen mode, original-size results for the selected image become fullscreen content.
+    /// In Fullscreen mode, original results populate the decoded-original cache.
     pub fn collect_loads(&mut self) {
         let now = Instant::now();
         while let Ok(result) = self.load_rx.try_recv() {
@@ -323,21 +538,266 @@ impl App {
                 dims,
             } = result;
             self.requested.remove(&(idx, size.clone()));
-            if self.state == AppState::Fullscreen
-                && idx == self.selected
-                && matches!(size, LoadSize::Original)
-            {
-                self.set_fullscreen_content(content, dims, now);
-                self.fullscreen_pending = false;
-            } else {
-                let proto = first_protocol(content);
-                // Discard protocols that exceed current cell (stale from terminal resize)
-                let psize = proto.size();
-                if self.thumb_w > 0 && (psize.width > self.thumb_w || psize.height > self.thumb_h) {
-                    continue;
+            match size {
+                LoadSize::Original => match content {
+                    FullscreenContent::Static(sc) => {
+                        self.insert_fullscreen_original(idx, Arc::clone(&sc.original));
+                        if self.state == AppState::Fullscreen && idx == self.selected {
+                            self.set_fullscreen_content(
+                                FullscreenContent::Static(StaticContent {
+                                    protocol: None,
+                                    original: sc.original,
+                                }),
+                                dims,
+                                now,
+                            );
+                            self.fullscreen_pending = true;
+                        }
+                    }
+                    FullscreenContent::Animation(frames) => {
+                        if self.state == AppState::Fullscreen && idx == self.selected {
+                            self.set_fullscreen_content(
+                                FullscreenContent::Animation(frames),
+                                dims,
+                                now,
+                            );
+                            self.fullscreen_pending = false;
+                        }
+                    }
+                },
+                LoadSize::Thumbnail { .. } => {
+                    let Some(proto) = first_protocol(content) else {
+                        continue;
+                    };
+                    // Discard protocols that exceed current cell (stale from terminal resize)
+                    let psize = proto.size();
+                    if self.thumb_w > 0
+                        && (psize.width > self.thumb_w || psize.height > self.thumb_h)
+                    {
+                        continue;
+                    }
+                    self.insert_cache(idx, proto);
                 }
-                self.insert_cache(idx, proto);
             }
+        }
+    }
+
+    pub fn collect_render_results(&mut self) {
+        while let Ok(result) = self.render_rx.try_recv() {
+            self.apply_render_result(result);
+        }
+    }
+
+    fn apply_render_result(&mut self, result: RenderResult) {
+        if self.state != AppState::Fullscreen
+            || self.selected != result.idx
+            || self.render_generation != result.generation
+        {
+            return;
+        }
+
+        let Some(current_key) = self.current_render_key(result.key.quality) else {
+            return;
+        };
+        if current_key != result.key {
+            return;
+        }
+        if result.key.quality == RenderQuality::Interactive
+            && self.fullscreen_protocol_key.as_ref().is_some_and(|key| {
+                key.quality == RenderQuality::Final && key.same_view(&result.key)
+            })
+        {
+            return;
+        }
+
+        self.fullscreen_render_cache
+            .put(result.key.clone(), result.protocol.clone());
+        self.apply_static_protocol(result.key, result.protocol);
+    }
+
+    fn apply_static_protocol(&mut self, key: RenderKey, protocol: Protocol) {
+        let Some(FullscreenContent::Static(sc)) = self.fullscreen_content.as_mut() else {
+            return;
+        };
+        sc.protocol = Some(protocol);
+        self.fullscreen_protocol_key = Some(key);
+        self.fullscreen_pending = false;
+    }
+
+    pub fn drive_render_queue(&mut self, now: Instant) {
+        if self.state != AppState::Fullscreen {
+            return;
+        }
+
+        let Some(geometry) = self.current_render_geometry() else {
+            return;
+        };
+
+        if self.zoom_dirty {
+            let quality = if u64::from(geometry.target_px_w) * u64::from(geometry.target_px_h)
+                <= DIRECT_FINAL_RENDER_PIXELS
+            {
+                RenderQuality::Final
+            } else {
+                RenderQuality::Interactive
+            };
+            if !self.apply_cached_render(quality) {
+                self.submit_render_request(quality);
+            }
+            self.zoom_dirty = false;
+            self.render_settle_deadline =
+                (quality == RenderQuality::Interactive).then_some(now + INTERACTIVE_SETTLE_DELAY);
+            return;
+        }
+
+        if self
+            .render_settle_deadline
+            .is_some_and(|deadline| now >= deadline)
+        {
+            self.render_settle_deadline = None;
+            if !self.apply_cached_render(RenderQuality::Final) {
+                self.submit_render_request(RenderQuality::Final);
+            }
+        }
+    }
+
+    /// Compatibility wrapper for tests that still exercise the dirty flag semantics.
+    #[cfg(test)]
+    pub fn regenerate_if_dirty(&mut self) {
+        self.drive_render_queue(Instant::now());
+    }
+
+    fn apply_cached_render(&mut self, quality: RenderQuality) -> bool {
+        let Some(key) = self.current_render_key(quality) else {
+            return false;
+        };
+        let Some(protocol) = self.fullscreen_render_cache.get(&key).cloned() else {
+            return false;
+        };
+        self.apply_static_protocol(key, protocol);
+        true
+    }
+
+    fn submit_render_request(&mut self, quality: RenderQuality) -> bool {
+        let Some(request) = self.current_render_request(quality) else {
+            return false;
+        };
+        self.render_tx.send(request).is_ok()
+    }
+
+    fn current_render_request(&self, quality: RenderQuality) -> Option<RenderRequest> {
+        let FullscreenContent::Static(sc) = self.fullscreen_content.as_ref()? else {
+            return None;
+        };
+        if self.fullscreen_image_w == 0 || self.fullscreen_image_h == 0 {
+            return None;
+        }
+        let font_size = self.picker.font_size();
+        let key = self.render_key(quality, font_size);
+        Some(RenderRequest {
+            idx: self.selected,
+            image: Arc::clone(&sc.original),
+            viewport: Size::new(
+                self.fullscreen_image_w.max(1),
+                self.fullscreen_image_h.max(1),
+            ),
+            font_size,
+            zoom: self.zoom,
+            pan_x: self.pan_x,
+            pan_y: self.pan_y,
+            key,
+            generation: self.render_generation,
+        })
+    }
+
+    fn current_render_key(&self, quality: RenderQuality) -> Option<RenderKey> {
+        if !matches!(
+            self.fullscreen_content.as_ref()?,
+            FullscreenContent::Static(_)
+        ) || self.fullscreen_image_w == 0
+            || self.fullscreen_image_h == 0
+        {
+            return None;
+        }
+        Some(self.render_key(quality, self.picker.font_size()))
+    }
+
+    fn render_key(&self, quality: RenderQuality, font_size: FontSize) -> RenderKey {
+        RenderKey {
+            idx: self.selected,
+            viewport_w: self.fullscreen_image_w.max(1),
+            viewport_h: self.fullscreen_image_h.max(1),
+            font_w: font_size.width.max(1),
+            font_h: font_size.height.max(1),
+            zoom_percent: zoom_percent(self.zoom),
+            pan_x: self.pan_x,
+            pan_y: self.pan_y,
+            quality,
+        }
+    }
+
+    fn current_render_geometry(&self) -> Option<ZoomRenderGeometry> {
+        let FullscreenContent::Static(sc) = self.fullscreen_content.as_ref()? else {
+            return None;
+        };
+        if self.fullscreen_image_w == 0 || self.fullscreen_image_h == 0 {
+            return None;
+        }
+        let fs = self.picker.font_size();
+        let vp_px_w = (self.fullscreen_image_w as u32).saturating_mul(fs.width as u32);
+        let vp_px_h = (self.fullscreen_image_h as u32).saturating_mul(fs.height as u32);
+        let pan_px_x = (self.pan_x as f32 * fs.width as f32) as i32;
+        let pan_px_y = (self.pan_y as f32 * fs.height as f32) as i32;
+        Some(zoom_render_geometry(
+            sc.original.width(),
+            sc.original.height(),
+            vp_px_w,
+            vp_px_h,
+            self.zoom,
+            pan_px_x,
+            pan_px_y,
+        ))
+    }
+
+    fn cached_fullscreen_original(&mut self, idx: usize) -> Option<Arc<image::DynamicImage>> {
+        self.fullscreen_original_cache
+            .get(&idx)
+            .map(|entry| Arc::clone(&entry.image))
+    }
+
+    fn insert_fullscreen_original(&mut self, idx: usize, image: Arc<image::DynamicImage>) {
+        let bytes = image_rgba_bytes(&image);
+        if let Some(old) = self
+            .fullscreen_original_cache
+            .put(idx, CachedOriginal { image, bytes })
+        {
+            self.fullscreen_original_cache_bytes = self
+                .fullscreen_original_cache_bytes
+                .saturating_sub(old.bytes);
+        }
+        self.fullscreen_original_cache_bytes =
+            self.fullscreen_original_cache_bytes.saturating_add(bytes);
+        self.evict_fullscreen_originals(Some(self.selected));
+    }
+
+    fn evict_fullscreen_originals(&mut self, protect_idx: Option<usize>) {
+        let mut protected = Vec::new();
+        while self.fullscreen_original_cache_bytes > FULLSCREEN_ORIGINAL_CACHE_BYTES
+            && self.fullscreen_original_cache.len() + protected.len() > 1
+        {
+            let Some((idx, entry)) = self.fullscreen_original_cache.pop_lru() else {
+                break;
+            };
+            if Some(idx) == protect_idx {
+                protected.push((idx, entry));
+                continue;
+            }
+            self.fullscreen_original_cache_bytes = self
+                .fullscreen_original_cache_bytes
+                .saturating_sub(entry.bytes);
+        }
+        for (idx, entry) in protected {
+            self.fullscreen_original_cache.put(idx, entry);
         }
     }
 
@@ -359,6 +819,9 @@ impl App {
     }
 
     pub fn request_load(&mut self, idx: usize, size: LoadSize) {
+        if matches!(size, LoadSize::Original) && self.fullscreen_original_cache.contains(&idx) {
+            return;
+        }
         let key = (idx, size.clone());
         if self.requested.contains(&key) {
             return;
@@ -461,7 +924,7 @@ impl App {
         if self.state != AppState::Fullscreen {
             return;
         }
-        self.set_zoom((self.zoom * ZOOM_STEP).min(ZOOM_MAX));
+        self.set_zoom((self.zoom + ZOOM_STEP).min(ZOOM_MAX));
     }
 
     /// 缩小，下限 ZOOM_MIN
@@ -469,7 +932,7 @@ impl App {
         if self.state != AppState::Fullscreen {
             return;
         }
-        self.set_zoom((self.zoom / ZOOM_STEP).max(ZOOM_MIN));
+        self.set_zoom((self.zoom - ZOOM_STEP).max(ZOOM_MIN));
     }
 
     /// 重置缩放与平移
@@ -480,89 +943,12 @@ impl App {
         self.zoom = 1.0;
         self.pan_x = 0;
         self.pan_y = 0;
-        self.zoom_dirty = true;
+        self.mark_render_dirty();
     }
 
     fn set_zoom(&mut self, zoom: f32) {
         self.zoom = zoom;
-        self.zoom_dirty = true;
-    }
-
-    /// 如果缩放/平移状态已变更，重新生成协议。应在渲染前调用。
-    pub fn regenerate_if_dirty(&mut self) {
-        if self.zoom_dirty {
-            self.regenerate_zoom_protocol();
-            self.zoom_dirty = false;
-        }
-    }
-
-    /// 用缓存原始图像以当前缩放级别重新生成协议。
-    /// 使用 `image::imageops::resize` 直接缩放像素（支持放大），
-    /// 而非依赖 ratatui-image 的 Resize::Fit（仅缩小）。
-    fn regenerate_zoom_protocol(&mut self) {
-        let Some(content) = self.fullscreen_content.as_mut() else {
-            return;
-        };
-        let FullscreenContent::Static(sc) = content else {
-            return;
-        };
-        let fs = self.picker.font_size();
-        let img_w = sc.original.width();
-        let img_h = sc.original.height();
-        // Viewport pixel size = cells × font pixel size
-        let vp_px_w = (self.fullscreen_image_w as u32).saturating_mul(fs.width as u32);
-        let vp_px_h = (self.fullscreen_image_h as u32).saturating_mul(fs.height as u32);
-
-        // Target pixel size = viewport pixels × zoom
-        let target_px_w = ((vp_px_w as f32) * self.zoom).max(1.0) as u32;
-        let target_px_h = ((vp_px_h as f32) * self.zoom).max(1.0) as u32;
-
-        // Crop region from original image (centered, offset by pan).
-        // At zoom <= 1.0 the crop is the full image (skip cropping overhead).
-        // At zoom > 1.0 it's a sub-region.
-        let crop_w = ((img_w as f32) / self.zoom).max(1.0).min(img_w as f32) as u32;
-        let crop_h = ((img_h as f32) / self.zoom).max(1.0).min(img_h as f32) as u32;
-        // Pan in pixels (pan is in terminal cells)
-        let pan_px_x = (self.pan_x as f32 * fs.width as f32) as i32;
-        let pan_px_y = (self.pan_y as f32 * fs.height as f32) as i32;
-
-        let resized = if (self.zoom - 1.0).abs() < f32::EPSILON {
-            // No crop needed — resize full image directly
-            image::imageops::resize(
-                &sc.original,
-                target_px_w,
-                target_px_h,
-                image::imageops::FilterType::Triangle,
-            )
-        } else {
-            let crop_x = ((img_w.saturating_sub(crop_w)) as f32 / 2.0) as i32 + pan_px_x;
-            let crop_y = ((img_h.saturating_sub(crop_h)) as f32 / 2.0) as i32 + pan_px_y;
-            let crop_x = crop_x.max(0).min((img_w.saturating_sub(crop_w)) as i32) as u32;
-            let crop_y = crop_y.max(0).min((img_h.saturating_sub(crop_h)) as i32) as u32;
-            // Crop and resize to target pixel size (use Triangle for speed)
-            let cropped = sc.original.crop_imm(crop_x, crop_y, crop_w, crop_h);
-            image::imageops::resize(
-                &cropped,
-                target_px_w,
-                target_px_h,
-                image::imageops::FilterType::Triangle,
-            )
-        };
-        let resized_img = image::DynamicImage::ImageRgba8(resized);
-
-        // Create protocol from resized image, fitting to viewport cell size.
-        // Use Resize::Fit with None filter since the image is already at exact pixel size.
-        let proto_size = Size::new(
-            self.fullscreen_image_w.max(1),
-            self.fullscreen_image_h.max(1),
-        );
-        if let Ok(protocol) = self
-            .picker
-            .new_protocol(resized_img, proto_size, Resize::Fit(None))
-        {
-            sc.protocol = protocol;
-        }
-        self.clamp_pan();
+        self.mark_render_dirty();
     }
 
     /// 平移后钳制到图片边界（基于原始图像像素尺寸）
@@ -607,22 +993,22 @@ impl App {
     pub fn pan_left(&mut self) {
         self.pan_x -= self.pan_step_x();
         self.clamp_pan();
-        self.zoom_dirty = true;
+        self.mark_render_dirty();
     }
     pub fn pan_right(&mut self) {
         self.pan_x += self.pan_step_x();
         self.clamp_pan();
-        self.zoom_dirty = true;
+        self.mark_render_dirty();
     }
     pub fn pan_up(&mut self) {
         self.pan_y -= self.pan_step_y();
         self.clamp_pan();
-        self.zoom_dirty = true;
+        self.mark_render_dirty();
     }
     pub fn pan_down(&mut self) {
         self.pan_y += self.pan_step_y();
         self.clamp_pan();
-        self.zoom_dirty = true;
+        self.mark_render_dirty();
     }
 }
 
@@ -642,10 +1028,10 @@ pub struct LoadRequest {
     pub size: LoadSize,
 }
 
-fn first_protocol(content: FullscreenContent) -> Protocol {
+fn first_protocol(content: FullscreenContent) -> Option<Protocol> {
     match content {
         FullscreenContent::Static(sc) => sc.protocol,
-        FullscreenContent::Animation(mut frames) => frames.remove(0).protocol,
+        FullscreenContent::Animation(mut frames) => Some(frames.remove(0).protocol),
     }
 }
 
@@ -667,23 +1053,18 @@ fn make_protocol(
     picker: &Picker,
     img: image::DynamicImage,
     size: Size,
-    filter: FilterType,
+    filter: ProtocolFilterType,
 ) -> Option<Protocol> {
     picker
         .new_protocol(img, size, Resize::Fit(Some(filter)))
         .ok()
 }
 
-fn static_original_content(
-    picker: &Picker,
-    img: image::DynamicImage,
-    size: Size,
-) -> Option<FullscreenContent> {
-    let protocol = make_protocol(picker, img.clone(), size, FilterType::Lanczos3)?;
-    Some(FullscreenContent::Static(StaticContent {
-        protocol,
-        original: img,
-    }))
+fn static_original_content(img: image::DynamicImage) -> FullscreenContent {
+    FullscreenContent::Static(StaticContent {
+        protocol: None,
+        original: Arc::new(img),
+    })
 }
 
 fn animation_content_from_frames<I>(
@@ -702,7 +1083,7 @@ where
         }
         let delay = frame_delay(frame.delay());
         let img = image::DynamicImage::ImageRgba8(frame.into_buffer());
-        let protocol = make_protocol(picker, img, size, FilterType::Lanczos3)?;
+        let protocol = make_protocol(picker, img, size, ProtocolFilterType::Lanczos3)?;
         animation_frames.push(AnimationFrame { protocol, delay });
     }
 
@@ -736,7 +1117,118 @@ fn try_decode_animation(picker: &Picker, path: &Path, size: Size) -> Option<Full
     }
 }
 
-/// Spawn a background thread pool that loads images and creates Protocols in parallel.
+fn zoom_percent(zoom: f32) -> u16 {
+    let zoom = if zoom.is_finite() { zoom } else { 1.0 };
+    (zoom * 100.0).round().clamp(1.0, u16::MAX as f32) as u16
+}
+
+fn image_rgba_bytes(image: &image::DynamicImage) -> usize {
+    (image.width() as usize)
+        .saturating_mul(image.height() as usize)
+        .saturating_mul(4)
+}
+
+fn spawn_render_worker(picker: Picker) -> (Sender<RenderRequest>, Receiver<RenderResult>) {
+    let (render_tx, render_rx) = std::sync::mpsc::channel::<RenderRequest>();
+    let (done_tx, done_rx) = std::sync::mpsc::channel::<RenderResult>();
+
+    std::thread::spawn(move || {
+        let mut resizer = fir::Resizer::new();
+        while let Ok(mut request) = render_rx.recv() {
+            while let Ok(next) = render_rx.try_recv() {
+                request = next;
+            }
+            if let Some(protocol) = render_zoom_protocol(&picker, &mut resizer, &request) {
+                let _ = done_tx.send(RenderResult {
+                    idx: request.idx,
+                    protocol,
+                    key: request.key,
+                    generation: request.generation,
+                });
+            }
+        }
+    });
+
+    (render_tx, done_rx)
+}
+
+fn render_zoom_protocol(
+    picker: &Picker,
+    resizer: &mut fir::Resizer,
+    request: &RenderRequest,
+) -> Option<Protocol> {
+    let viewport_px_w =
+        (request.viewport.width as u32).saturating_mul(request.font_size.width as u32);
+    let viewport_px_h =
+        (request.viewport.height as u32).saturating_mul(request.font_size.height as u32);
+    let pan_px_x = (request.pan_x as f32 * request.font_size.width as f32) as i32;
+    let pan_px_y = (request.pan_y as f32 * request.font_size.height as f32) as i32;
+    let geometry = zoom_render_geometry(
+        request.image.width(),
+        request.image.height(),
+        viewport_px_w,
+        viewport_px_h,
+        request.zoom,
+        pan_px_x,
+        pan_px_y,
+    );
+
+    let resized =
+        resize_with_fast_image_resize(resizer, &request.image, &geometry, request.key.quality)
+            .unwrap_or_else(|| {
+                resize_with_image_crate(&request.image, &geometry, request.key.quality)
+            });
+    let resized_img = image::DynamicImage::ImageRgba8(resized);
+    picker
+        .new_protocol(resized_img, request.viewport, Resize::Fit(None))
+        .ok()
+}
+
+fn resize_with_fast_image_resize(
+    resizer: &mut fir::Resizer,
+    image: &image::DynamicImage,
+    geometry: &ZoomRenderGeometry,
+    quality: RenderQuality,
+) -> Option<image::RgbaImage> {
+    let src = image.to_rgba8();
+    let mut dst = image::RgbaImage::new(geometry.target_px_w, geometry.target_px_h);
+    let algorithm = match quality {
+        RenderQuality::Interactive => fir::ResizeAlg::Nearest,
+        RenderQuality::Final => fir::ResizeAlg::Convolution(fir::FilterType::Lanczos3),
+    };
+    let options = fir::ResizeOptions::new().resize_alg(algorithm).crop(
+        f64::from(geometry.crop_x),
+        f64::from(geometry.crop_y),
+        f64::from(geometry.crop_w),
+        f64::from(geometry.crop_h),
+    );
+
+    resizer.resize(&src, &mut dst, Some(&options)).ok()?;
+    Some(dst)
+}
+
+fn resize_with_image_crate(
+    image: &image::DynamicImage,
+    geometry: &ZoomRenderGeometry,
+    quality: RenderQuality,
+) -> image::RgbaImage {
+    let filter = match quality {
+        RenderQuality::Interactive => image::imageops::FilterType::Nearest,
+        RenderQuality::Final => image::imageops::FilterType::Lanczos3,
+    };
+    let rgba = image.to_rgba8();
+    let cropped = image::imageops::crop_imm(
+        &rgba,
+        geometry.crop_x,
+        geometry.crop_y,
+        geometry.crop_w,
+        geometry.crop_h,
+    )
+    .to_image();
+    image::imageops::resize(&cropped, geometry.target_px_w, geometry.target_px_h, filter)
+}
+
+/// Spawn background workers that load thumbnails separately from fullscreen originals.
 /// Returns (sender, receiver) for App to use.
 pub fn spawn_image_loader(
     picker: Picker,
@@ -745,72 +1237,105 @@ pub fn spawn_image_loader(
     let (load_tx, load_rx) = std::sync::mpsc::channel::<LoadRequest>();
     let (done_tx, done_rx) = std::sync::mpsc::channel::<LoadResult>();
     let paths = std::sync::Arc::new(paths);
-    let rx = std::sync::Arc::new(std::sync::Mutex::new(load_rx));
 
-    const WORKERS: usize = 4;
-    for _ in 0..WORKERS {
+    let (thumb_tx, thumb_rx) = std::sync::mpsc::channel::<LoadRequest>();
+    let (original_tx, original_rx) = std::sync::mpsc::channel::<LoadRequest>();
+
+    std::thread::spawn(move || {
+        while let Ok(req) = load_rx.recv() {
+            let routed = match req.size {
+                LoadSize::Thumbnail { .. } => thumb_tx.send(req),
+                LoadSize::Original => original_tx.send(req),
+            };
+            if routed.is_err() {
+                break;
+            }
+        }
+    });
+
+    spawn_loader_workers(
+        picker.clone(),
+        Arc::clone(&paths),
+        done_tx.clone(),
+        thumb_rx,
+        3,
+    );
+    spawn_loader_workers(picker, paths, done_tx, original_rx, 1);
+
+    (load_tx, done_rx)
+}
+
+fn spawn_loader_workers(
+    picker: Picker,
+    paths: Arc<Vec<std::path::PathBuf>>,
+    done_tx: Sender<LoadResult>,
+    load_rx: Receiver<LoadRequest>,
+    workers: usize,
+) {
+    let rx = Arc::new(std::sync::Mutex::new(load_rx));
+    for _ in 0..workers {
         let picker = picker.clone();
-        let paths = std::sync::Arc::clone(&paths);
+        let paths = Arc::clone(&paths);
         let done_tx = done_tx.clone();
-        let rx = std::sync::Arc::clone(&rx);
+        let rx = Arc::clone(&rx);
 
         std::thread::spawn(move || loop {
-            // Lock only for receiving; release during processing
             let req = {
                 let rx = rx.lock().unwrap();
                 match rx.recv() {
                     Ok(req) => req,
-                    Err(_) => return, // Sender dropped, exit worker
+                    Err(_) => return,
                 }
             };
 
-            if let Some(path) = paths.get(req.idx) {
-                if let Ok(img) = image::open(path) {
-                    let font_size = picker.font_size();
-                    let dims = (img.width(), img.height());
-                    let (img, protocol_size, filter) = match req.size {
-                        LoadSize::Thumbnail { w, h } => {
-                            let pixel_w = w as u32 * font_size.width as u32 * 2;
-                            let pixel_h = h as u32 * font_size.height as u32 * 2;
-                            let thumb = img.thumbnail(pixel_w, pixel_h);
-                            let size = Size::new(w, h);
-                            (thumb, size, FilterType::Nearest)
-                        }
-                        LoadSize::Original => {
-                            let nat_w = img.width().div_ceil(font_size.width as u32) as u16;
-                            let nat_h = img.height().div_ceil(font_size.height as u32) as u16;
-                            let size = Size::new(nat_w.max(1), nat_h.max(1));
-                            (img, size, FilterType::Lanczos3)
-                        }
-                    };
-                    let content = match req.size {
-                        LoadSize::Original => try_decode_animation(&picker, path, protocol_size)
-                            .or_else(|| static_original_content(&picker, img, protocol_size)),
-                        LoadSize::Thumbnail { .. } => {
-                            make_protocol(&picker, img.clone(), protocol_size, filter).map(
-                                |protocol| {
-                                    FullscreenContent::Static(StaticContent {
-                                        protocol,
-                                        original: img,
-                                    })
-                                },
-                            )
-                        }
-                    };
-                    if let Some(content) = content {
-                        let _ = done_tx.send(LoadResult {
-                            idx: req.idx,
-                            size: req.size,
-                            content,
-                            dims: Some(dims),
-                        });
-                    }
-                }
+            if let Some(result) = process_load_request(&picker, &paths, req) {
+                let _ = done_tx.send(result);
             }
         });
     }
+}
 
-    (load_tx, done_rx)
+fn process_load_request(
+    picker: &Picker,
+    paths: &[std::path::PathBuf],
+    req: LoadRequest,
+) -> Option<LoadResult> {
+    let path = paths.get(req.idx)?;
+    let img = image::open(path).ok()?;
+    let font_size = picker.font_size();
+    let dims = (img.width(), img.height());
+
+    let content = match req.size {
+        LoadSize::Thumbnail { w, h } => {
+            let pixel_w = w as u32 * font_size.width as u32 * 2;
+            let pixel_h = h as u32 * font_size.height as u32 * 2;
+            let thumb = img.thumbnail(pixel_w, pixel_h);
+            let protocol = make_protocol(
+                picker,
+                thumb.clone(),
+                Size::new(w, h),
+                ProtocolFilterType::Nearest,
+            )?;
+            FullscreenContent::Static(StaticContent {
+                protocol: Some(protocol),
+                original: Arc::new(thumb),
+            })
+        }
+        LoadSize::Original => {
+            let nat_w = img.width().div_ceil(font_size.width as u32) as u16;
+            let nat_h = img.height().div_ceil(font_size.height as u32) as u16;
+            let protocol_size = Size::new(nat_w.max(1), nat_h.max(1));
+            try_decode_animation(picker, path, protocol_size)
+                .unwrap_or_else(|| static_original_content(img))
+        }
+    };
+
+    Some(LoadResult {
+        idx: req.idx,
+        size: req.size,
+        content,
+        dims: Some(dims),
+    })
 }
 
 #[cfg(test)]
@@ -868,8 +1393,19 @@ mod tests {
         let picker = Picker::halfblocks();
         let img = image::DynamicImage::new_rgba8(1, 1);
         picker
-            .new_protocol(img, Size::new(1, 1), Resize::Fit(Some(FilterType::Nearest)))
+            .new_protocol(
+                img,
+                Size::new(1, 1),
+                Resize::Fit(Some(ProtocolFilterType::Nearest)),
+            )
             .unwrap()
+    }
+
+    fn make_static_content(width: u32, height: u32) -> FullscreenContent {
+        FullscreenContent::Static(StaticContent {
+            protocol: Some(make_protocol()),
+            original: Arc::new(image::DynamicImage::new_rgba8(width, height)),
+        })
     }
 
     fn make_animation_frame(delay_ms: u64) -> AnimationFrame {
@@ -1036,6 +1572,115 @@ mod tests {
             Some(FullscreenContent::Animation(frames)) => assert_eq!(frames.len(), 2),
             _ => panic!("expected animated GIF content"),
         }
+    }
+
+    #[test]
+    fn static_original_content_has_no_protocol_until_rendered() {
+        let content = static_original_content(image::DynamicImage::new_rgba8(10, 20));
+
+        match content {
+            FullscreenContent::Static(sc) => {
+                assert!(sc.protocol.is_none());
+                assert_eq!(sc.original.width(), 10);
+                assert_eq!(sc.original.height(), 20);
+            }
+            FullscreenContent::Animation(_) => panic!("expected static content"),
+        }
+    }
+
+    #[test]
+    fn stale_render_result_is_discarded() {
+        let mut app = make_app(1);
+        app.state = AppState::Fullscreen;
+        app.set_fullscreen_content(
+            static_original_content(image::DynamicImage::new_rgba8(400, 300)),
+            Some((400, 300)),
+            Instant::now(),
+        );
+        app.set_fullscreen_viewport(20, 10);
+        let key = app.current_render_key(RenderQuality::Final).unwrap();
+        let current_generation = app.render_generation;
+
+        app.apply_render_result(RenderResult {
+            idx: app.selected,
+            protocol: make_protocol(),
+            key,
+            generation: current_generation.saturating_sub(1),
+        });
+
+        assert!(app.current_fullscreen_protocol().is_none());
+        assert!(app.fullscreen_protocol_key.is_none());
+    }
+
+    #[test]
+    fn protocol_cache_hit_satisfies_dirty_render() {
+        let mut app = make_app(1);
+        let now = Instant::now();
+        app.state = AppState::Fullscreen;
+        app.set_fullscreen_content(
+            static_original_content(image::DynamicImage::new_rgba8(400, 300)),
+            Some((400, 300)),
+            now,
+        );
+        app.set_fullscreen_viewport(20, 10);
+        let key = app.current_render_key(RenderQuality::Final).unwrap();
+        app.fullscreen_render_cache
+            .put(key.clone(), make_protocol());
+
+        app.drive_render_queue(now);
+
+        assert!(!app.zoom_dirty);
+        assert!(app.current_fullscreen_protocol().is_some());
+        assert_eq!(app.fullscreen_protocol_key, Some(key));
+        assert!(app.next_render_deadline().is_none());
+    }
+
+    #[test]
+    fn fullscreen_original_cache_evicts_to_budget_and_keeps_selected() {
+        let mut app = make_app(3);
+        app.selected = 0;
+        for idx in 0..3 {
+            app.insert_fullscreen_original(
+                idx,
+                Arc::new(image::DynamicImage::new_rgba8(4096, 4096)),
+            );
+        }
+
+        assert!(app.fullscreen_original_cache_bytes <= FULLSCREEN_ORIGINAL_CACHE_BYTES);
+        assert!(app.fullscreen_original_cache.contains(&0));
+        assert!(app.fullscreen_original_cache.contains(&2));
+        assert!(!app.fullscreen_original_cache.contains(&1));
+    }
+
+    #[test]
+    fn fullscreen_original_cache_evicts_neighbor_before_selected() {
+        let mut app = make_app(2);
+        app.selected = 0;
+        for idx in 0..2 {
+            app.insert_fullscreen_original(
+                idx,
+                Arc::new(image::DynamicImage::new_rgba8(5000, 5000)),
+            );
+        }
+
+        assert!(app.fullscreen_original_cache_bytes <= FULLSCREEN_ORIGINAL_CACHE_BYTES);
+        assert!(app.fullscreen_original_cache.contains(&0));
+        assert!(!app.fullscreen_original_cache.contains(&1));
+    }
+
+    #[test]
+    fn animation_does_not_enter_static_render_queue() {
+        let mut app = make_app(1);
+        let now = Instant::now();
+        install_test_animation(&mut app, now);
+        app.set_fullscreen_viewport(20, 10);
+        let generation = app.render_generation;
+
+        app.drive_render_queue(now);
+
+        assert!(!app.zoom_dirty);
+        assert_eq!(app.render_generation, generation);
+        assert!(app.next_render_deadline().is_none());
     }
 
     #[test]
@@ -1216,7 +1861,7 @@ mod tests {
         app.state = AppState::Fullscreen;
         app.zoom = 1.0;
         app.zoom_in();
-        assert!((app.zoom - 1.25).abs() < 0.01);
+        assert!((app.zoom - 1.1).abs() < 0.01);
     }
 
     #[test]
@@ -1225,7 +1870,7 @@ mod tests {
         app.state = AppState::Fullscreen;
         app.zoom = 2.0;
         app.zoom_out();
-        assert!((app.zoom - 1.6).abs() < 0.01);
+        assert!((app.zoom - 1.9).abs() < 0.01);
     }
 
     #[test]
@@ -1241,9 +1886,18 @@ mod tests {
     fn zoom_clamped_to_min() {
         let mut app = make_app(5);
         app.state = AppState::Fullscreen;
+        app.zoom = 1.0;
+        app.zoom_out();
+        assert!((app.zoom - 1.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn zoom_out_recovers_to_min_when_below_100_percent() {
+        let mut app = make_app(5);
+        app.state = AppState::Fullscreen;
         app.zoom = 0.25;
         app.zoom_out();
-        assert!((app.zoom - 0.25).abs() < 0.01);
+        assert!((app.zoom - 1.0).abs() < 0.01);
     }
 
     #[test]
@@ -1280,6 +1934,77 @@ mod tests {
     }
 
     #[test]
+    fn set_fullscreen_content_static_marks_zoom_dirty_and_resets_zoom_pan() {
+        let mut app = make_app(1);
+        app.state = AppState::Fullscreen;
+        app.zoom = 2.0;
+        app.pan_x = 4;
+        app.pan_y = -3;
+        app.zoom_dirty = false;
+
+        app.set_fullscreen_content(
+            make_static_content(400, 300),
+            Some((400, 300)),
+            Instant::now(),
+        );
+
+        assert!((app.zoom - 1.0).abs() < 0.01);
+        assert_eq!(app.pan_x, 0);
+        assert_eq!(app.pan_y, 0);
+        assert!(app.zoom_dirty);
+    }
+
+    #[test]
+    fn fullscreen_viewport_change_marks_static_content_dirty() {
+        let mut app = make_app(1);
+        app.state = AppState::Fullscreen;
+        app.set_fullscreen_content(
+            make_static_content(400, 300),
+            Some((400, 300)),
+            Instant::now(),
+        );
+        app.zoom_dirty = false;
+
+        app.set_fullscreen_viewport(80, 40);
+        assert!(app.zoom_dirty);
+
+        app.zoom_dirty = false;
+        app.set_fullscreen_viewport(80, 40);
+        assert!(!app.zoom_dirty);
+
+        app.set_fullscreen_viewport(81, 40);
+        assert!(app.zoom_dirty);
+    }
+
+    #[test]
+    fn fullscreen_viewport_change_does_not_dirty_animation() {
+        let mut app = make_app(1);
+        install_test_animation(&mut app, Instant::now());
+
+        app.set_fullscreen_viewport(80, 40);
+
+        assert!(!app.zoom_dirty);
+    }
+
+    #[test]
+    fn regenerate_waits_until_viewport_is_known() {
+        let mut app = make_app(1);
+        app.state = AppState::Fullscreen;
+        app.set_fullscreen_content(
+            make_static_content(400, 300),
+            Some((400, 300)),
+            Instant::now(),
+        );
+
+        app.regenerate_if_dirty();
+        assert!(app.zoom_dirty);
+
+        app.set_fullscreen_viewport(80, 40);
+        app.regenerate_if_dirty();
+        assert!(!app.zoom_dirty);
+    }
+
+    #[test]
     fn pan_moves_in_correct_direction() {
         let mut app = make_app(1);
         app.state = AppState::Fullscreen;
@@ -1289,19 +2014,60 @@ mod tests {
         let img = image::DynamicImage::new_rgba8(4000, 3000);
         app.picker = Picker::halfblocks();
         app.fullscreen_content = Some(FullscreenContent::Static(StaticContent {
-            protocol: make_protocol(), // placeholder
-            original: img,
+            protocol: Some(make_protocol()), // placeholder
+            original: Arc::new(img),
         }));
         // Zoom in so pan has room (at zoom 1.0, full image visible → no pan room)
-        app.zoom_in(); // zoom = 1.25
+        app.zoom_in(); // zoom = 1.1
 
         app.pan_right();
         assert!(app.pan_x > 0, "pan_right should increase pan_x");
+        app.pan_x = 0;
         app.pan_left();
-        assert_eq!(app.pan_x, 0, "pan_left should return to 0");
+        assert!(app.pan_x < 0, "pan_left should decrease pan_x");
+        app.pan_y = 0;
         app.pan_down();
         assert!(app.pan_y > 0, "pan_down should increase pan_y");
+        app.pan_y = 0;
         app.pan_up();
-        assert_eq!(app.pan_y, 0, "pan_up should return to 0");
+        assert!(app.pan_y < 0, "pan_up should decrease pan_y");
+    }
+
+    #[test]
+    fn zoom_geometry_fits_100_percent_to_viewport() {
+        let geometry = zoom_render_geometry(4000, 3000, 800, 400, 1.0, 0, 0);
+
+        assert_eq!(geometry.target_px_w, 533);
+        assert_eq!(geometry.target_px_h, 400);
+        assert_eq!(geometry.crop_w, 4000);
+        assert_eq!(geometry.crop_h, 3000);
+    }
+
+    #[test]
+    fn zoom_geometry_scales_down_target_when_zoomed_out() {
+        let geometry = zoom_render_geometry(4000, 3000, 800, 400, 0.5, 0, 0);
+
+        assert_eq!(geometry.target_px_w, 267);
+        assert_eq!(geometry.target_px_h, 200);
+        assert_eq!(geometry.crop_w, 4000);
+        assert_eq!(geometry.crop_h, 3000);
+    }
+
+    #[test]
+    fn zoom_geometry_crops_source_when_zoomed_in() {
+        let geometry = zoom_render_geometry(4000, 3000, 800, 400, 1.1, 0, 0);
+
+        assert_eq!(geometry.target_px_w, 533);
+        assert_eq!(geometry.target_px_h, 400);
+        assert!(geometry.crop_w < 4000);
+        assert!(geometry.crop_h < 3000);
+    }
+
+    #[test]
+    fn zoom_geometry_does_not_stretch_in_tall_viewport() {
+        let geometry = zoom_render_geometry(4000, 3000, 300, 800, 1.0, 0, 0);
+
+        assert_eq!(geometry.target_px_w, 300);
+        assert_eq!(geometry.target_px_h, 225);
     }
 }

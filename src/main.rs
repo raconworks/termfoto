@@ -159,17 +159,29 @@ fn run(
 
         // Check for completed background image loads
         app.collect_loads();
+        app.collect_render_results();
         app.advance_animation(Instant::now());
 
-        // Regenerate zoom protocol if dirty (batches rapid zoom/pan keystrokes)
-        app.regenerate_if_dirty();
+        // Submit async render work for any settled fullscreen state known before draw.
+        app.drive_render_queue(Instant::now());
 
         // Render
         terminal.draw(|f| ui::draw(f, &mut app, cell_w, cell_h))?;
 
-        let poll_timeout = app
+        // Preview rendering records its viewport during draw; submit work after that too.
+        app.drive_render_queue(Instant::now());
+
+        let now = Instant::now();
+        let animation_timeout = app
             .next_animation_deadline()
-            .map(|deadline| deadline.saturating_duration_since(Instant::now()))
+            .map(|deadline| deadline.saturating_duration_since(now));
+        let render_timeout = app
+            .next_render_deadline()
+            .map(|deadline| deadline.saturating_duration_since(now));
+        let poll_timeout = animation_timeout
+            .into_iter()
+            .chain(render_timeout)
+            .min()
             .unwrap_or_else(|| Duration::from_millis(50))
             .min(Duration::from_millis(50));
 

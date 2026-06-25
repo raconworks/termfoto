@@ -70,9 +70,9 @@ impl<'a> Widget for PreviewView<'a> {
             ..main_area
         };
 
-        // Record viewport size for zoom calculations
-        self.app.fullscreen_image_w = image_area.width;
-        self.app.fullscreen_image_h = image_area.height;
+        // Record viewport size for zoom calculations.
+        self.app
+            .set_fullscreen_viewport(image_area.width, image_area.height);
 
         // --- Image area ---
         if let Some(proto) = self.app.current_fullscreen_protocol() {
