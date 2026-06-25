@@ -35,7 +35,7 @@ pub struct AnimationFrame {
 #[derive(Clone)]
 pub struct StaticContent {
     pub protocol: Option<Protocol>,
-    pub original: Arc<image::DynamicImage>,
+    pub original: Arc<image::RgbaImage>,
 }
 
 #[derive(Clone)]
@@ -48,8 +48,13 @@ pub enum FullscreenContent {
 pub struct LoadResult {
     idx: usize,
     size: LoadSize,
-    content: FullscreenContent,
+    content: LoadContent,
     dims: Option<(u32, u32)>,
+}
+
+enum LoadContent {
+    Thumbnail(Protocol),
+    Original(FullscreenContent),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -84,6 +89,7 @@ pub struct App {
     pub fullscreen_image_w: u16,
     pub fullscreen_image_h: u16,
     zoom_dirty: bool,
+    render_dirty_reason: Option<RenderDirtyReason>,
     render_generation: u64,
     render_settle_deadline: Option<Instant>,
     fullscreen_protocol_key: Option<RenderKey>,
@@ -110,18 +116,30 @@ const INTERACTIVE_SETTLE_DELAY: Duration = Duration::from_millis(120);
 const DIRECT_FINAL_RENDER_PIXELS: u64 = 1_000_000;
 
 struct ZoomRenderGeometry {
-    crop_x: u32,
-    crop_y: u32,
-    crop_w: u32,
-    crop_h: u32,
+    source_x: f64,
+    source_y: f64,
+    source_w: f64,
+    source_h: f64,
     target_px_w: u32,
     target_px_h: u32,
+}
+
+struct ZoomDisplayGeometry {
+    scale: f64,
+    display_px_w: f64,
+    display_px_h: f64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 enum RenderQuality {
     Interactive,
     Final,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RenderDirtyReason {
+    Interaction,
+    ContentOrViewport,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -152,13 +170,13 @@ impl RenderKey {
 
 #[derive(Clone)]
 struct CachedOriginal {
-    image: Arc<image::DynamicImage>,
+    image: Arc<image::RgbaImage>,
     bytes: usize,
 }
 
 struct RenderRequest {
     idx: usize,
-    image: Arc<image::DynamicImage>,
+    image: Arc<image::RgbaImage>,
     viewport: Size,
     font_size: FontSize,
     zoom: f32,
@@ -188,42 +206,86 @@ fn zoom_render_geometry(
     let img_h = img_h.max(1);
     let viewport_px_w = viewport_px_w.max(1);
     let viewport_px_h = viewport_px_h.max(1);
-    let zoom = if zoom.is_finite() && zoom > 0.0 {
-        zoom
+    let display = zoom_display_geometry(img_w, img_h, viewport_px_w, viewport_px_h, zoom);
+
+    let visible_display_w = display.display_px_w.min(f64::from(viewport_px_w));
+    let visible_display_h = display.display_px_h.min(f64::from(viewport_px_h));
+    let target_px_w = rounded_px(visible_display_w);
+    let target_px_h = rounded_px(visible_display_h);
+
+    let max_display_x = (display.display_px_w - f64::from(viewport_px_w)).max(0.0);
+    let max_display_y = (display.display_px_h - f64::from(viewport_px_h)).max(0.0);
+    let display_x = if max_display_x > 0.0 {
+        (max_display_x / 2.0 + f64::from(pan_px_x)).clamp(0.0, max_display_x)
     } else {
-        1.0
+        0.0
+    };
+    let display_y = if max_display_y > 0.0 {
+        (max_display_y / 2.0 + f64::from(pan_px_y)).clamp(0.0, max_display_y)
+    } else {
+        0.0
     };
 
-    let crop_scale = zoom.max(1.0);
-    let crop_w = ((img_w as f32) / crop_scale).max(1.0).min(img_w as f32) as u32;
-    let crop_h = ((img_h as f32) / crop_scale).max(1.0).min(img_h as f32) as u32;
-
-    let max_crop_x = img_w.saturating_sub(crop_w);
-    let max_crop_y = img_h.saturating_sub(crop_h);
-    let crop_x = ((max_crop_x as f32 / 2.0) as i32 + pan_px_x).clamp(0, max_crop_x as i32) as u32;
-    let crop_y = ((max_crop_y as f32 / 2.0) as i32 + pan_px_y).clamp(0, max_crop_y as i32) as u32;
-
-    let fit_scale = (viewport_px_w as f32 / crop_w as f32)
-        .min(viewport_px_h as f32 / crop_h as f32)
-        .max(f32::EPSILON);
-    let target_scale = fit_scale * zoom.min(1.0);
-    let target_px_w = ((crop_w as f32) * target_scale)
-        .round()
-        .min(viewport_px_w as f32)
-        .max(1.0) as u32;
-    let target_px_h = ((crop_h as f32) * target_scale)
-        .round()
-        .min(viewport_px_h as f32)
-        .max(1.0) as u32;
+    let source_w = (visible_display_w / display.scale).clamp(1.0, f64::from(img_w));
+    let source_h = (visible_display_h / display.scale).clamp(1.0, f64::from(img_h));
+    let max_source_x = (f64::from(img_w) - source_w).max(0.0);
+    let max_source_y = (f64::from(img_h) - source_h).max(0.0);
+    let source_x = (display_x / display.scale).clamp(0.0, max_source_x);
+    let source_y = (display_y / display.scale).clamp(0.0, max_source_y);
 
     ZoomRenderGeometry {
-        crop_x,
-        crop_y,
-        crop_w,
-        crop_h,
+        source_x,
+        source_y,
+        source_w,
+        source_h,
         target_px_w,
         target_px_h,
     }
+}
+
+fn zoom_display_geometry(
+    img_w: u32,
+    img_h: u32,
+    viewport_px_w: u32,
+    viewport_px_h: u32,
+    zoom: f32,
+) -> ZoomDisplayGeometry {
+    let img_w = img_w.max(1);
+    let img_h = img_h.max(1);
+    let viewport_px_w = viewport_px_w.max(1);
+    let viewport_px_h = viewport_px_h.max(1);
+    let zoom = normalized_zoom(zoom);
+    let fit_scale = (f64::from(viewport_px_w) / f64::from(img_w))
+        .min(f64::from(viewport_px_h) / f64::from(img_h))
+        .max(f64::EPSILON);
+    let scale = fit_scale * f64::from(zoom);
+
+    ZoomDisplayGeometry {
+        scale,
+        display_px_w: (f64::from(img_w) * scale).max(1.0),
+        display_px_h: (f64::from(img_h) * scale).max(1.0),
+    }
+}
+
+fn normalized_zoom(zoom: f32) -> f32 {
+    if zoom.is_finite() {
+        zoom.clamp(ZOOM_MIN, ZOOM_MAX)
+    } else {
+        ZOOM_MIN
+    }
+}
+
+fn rounded_px(value: f64) -> u32 {
+    value.round().clamp(1.0, f64::from(u32::MAX)) as u32
+}
+
+fn max_pan_cells(display_px: f64, viewport_px: u32, font_px: u16) -> i16 {
+    let overflow = display_px - f64::from(viewport_px.max(1));
+    if overflow <= 0.0 {
+        return 0;
+    }
+    let cells = (overflow / 2.0 / f64::from(font_px.max(1))).ceil();
+    cells.clamp(0.0, f64::from(i16::MAX)) as i16
 }
 
 impl App {
@@ -265,6 +327,7 @@ impl App {
             fullscreen_image_w: 0,
             fullscreen_image_h: 0,
             zoom_dirty: false,
+            render_dirty_reason: None,
             render_generation: 0,
             render_settle_deadline: None,
             fullscreen_protocol_key: None,
@@ -355,6 +418,7 @@ impl App {
         self.fullscreen_image_w = 0;
         self.fullscreen_image_h = 0;
         self.fullscreen_pending = false;
+        self.render_dirty_reason = None;
         self.render_settle_deadline = None;
     }
 
@@ -390,6 +454,7 @@ impl App {
         self.fullscreen_next_frame_at = None;
         self.fullscreen_dims = None;
         self.zoom_dirty = false;
+        self.render_dirty_reason = None;
         self.render_settle_deadline = None;
         self.fullscreen_protocol_key = None;
         self.render_generation = self.render_generation.wrapping_add(1);
@@ -452,9 +517,10 @@ impl App {
         self.fullscreen_dims = dims;
         self.fullscreen_protocol_key = None;
         if is_static {
-            self.mark_render_dirty();
+            self.mark_render_dirty(RenderDirtyReason::ContentOrViewport);
         } else {
             self.zoom_dirty = false;
+            self.render_dirty_reason = None;
             self.render_settle_deadline = None;
         }
     }
@@ -464,7 +530,8 @@ impl App {
         self.fullscreen_image_w = width;
         self.fullscreen_image_h = height;
         if changed && matches!(self.fullscreen_content, Some(FullscreenContent::Static(_))) {
-            self.mark_render_dirty();
+            self.clamp_pan();
+            self.mark_render_dirty(RenderDirtyReason::ContentOrViewport);
         }
     }
 
@@ -519,8 +586,9 @@ impl App {
         self.render_settle_deadline
     }
 
-    fn mark_render_dirty(&mut self) {
+    fn mark_render_dirty(&mut self, reason: RenderDirtyReason) {
         self.zoom_dirty = true;
+        self.render_dirty_reason = Some(reason);
         self.render_settle_deadline = None;
         self.render_generation = self.render_generation.wrapping_add(1);
     }
@@ -538,8 +606,8 @@ impl App {
                 dims,
             } = result;
             self.requested.remove(&(idx, size.clone()));
-            match size {
-                LoadSize::Original => match content {
+            match content {
+                LoadContent::Original(content) => match content {
                     FullscreenContent::Static(sc) => {
                         self.insert_fullscreen_original(idx, Arc::clone(&sc.original));
                         if self.state == AppState::Fullscreen && idx == self.selected {
@@ -565,10 +633,7 @@ impl App {
                         }
                     }
                 },
-                LoadSize::Thumbnail { .. } => {
-                    let Some(proto) = first_protocol(content) else {
-                        continue;
-                    };
+                LoadContent::Thumbnail(proto) => {
                     // Discard protocols that exceed current cell (stale from terminal resize)
                     let psize = proto.size();
                     if self.thumb_w > 0
@@ -634,17 +699,26 @@ impl App {
         };
 
         if self.zoom_dirty {
-            let quality = if u64::from(geometry.target_px_w) * u64::from(geometry.target_px_h)
-                <= DIRECT_FINAL_RENDER_PIXELS
-            {
-                RenderQuality::Final
-            } else {
-                RenderQuality::Interactive
+            let reason = self
+                .render_dirty_reason
+                .unwrap_or(RenderDirtyReason::ContentOrViewport);
+            let quality = match reason {
+                RenderDirtyReason::Interaction => RenderQuality::Interactive,
+                RenderDirtyReason::ContentOrViewport => {
+                    if u64::from(geometry.target_px_w) * u64::from(geometry.target_px_h)
+                        <= DIRECT_FINAL_RENDER_PIXELS
+                    {
+                        RenderQuality::Final
+                    } else {
+                        RenderQuality::Interactive
+                    }
+                }
             };
             if !self.apply_cached_render(quality) {
                 self.submit_render_request(quality);
             }
             self.zoom_dirty = false;
+            self.render_dirty_reason = None;
             self.render_settle_deadline =
                 (quality == RenderQuality::Interactive).then_some(now + INTERACTIVE_SETTLE_DELAY);
             return;
@@ -759,14 +833,14 @@ impl App {
         ))
     }
 
-    fn cached_fullscreen_original(&mut self, idx: usize) -> Option<Arc<image::DynamicImage>> {
+    fn cached_fullscreen_original(&mut self, idx: usize) -> Option<Arc<image::RgbaImage>> {
         self.fullscreen_original_cache
             .get(&idx)
             .map(|entry| Arc::clone(&entry.image))
     }
 
-    fn insert_fullscreen_original(&mut self, idx: usize, image: Arc<image::DynamicImage>) {
-        let bytes = image_rgba_bytes(&image);
+    fn insert_fullscreen_original(&mut self, idx: usize, image: Arc<image::RgbaImage>) {
+        let bytes = rgba_bytes(&image);
         if let Some(old) = self
             .fullscreen_original_cache
             .put(idx, CachedOriginal { image, bytes })
@@ -943,31 +1017,37 @@ impl App {
         self.zoom = 1.0;
         self.pan_x = 0;
         self.pan_y = 0;
-        self.mark_render_dirty();
+        self.mark_render_dirty(RenderDirtyReason::Interaction);
     }
 
     fn set_zoom(&mut self, zoom: f32) {
-        self.zoom = zoom;
-        self.mark_render_dirty();
+        self.zoom = normalized_zoom(zoom);
+        self.clamp_pan();
+        self.mark_render_dirty(RenderDirtyReason::Interaction);
     }
 
-    /// 平移后钳制到图片边界（基于原始图像像素尺寸）
+    /// 平移后钳制到缩放后整图超出视口的范围内
     fn clamp_pan(&mut self) {
         let Some(FullscreenContent::Static(sc)) = self.fullscreen_content.as_ref() else {
             return;
         };
+        if self.fullscreen_image_w == 0 || self.fullscreen_image_h == 0 {
+            self.pan_x = 0;
+            self.pan_y = 0;
+            return;
+        }
         let fs = self.picker.font_size();
-        let img_w = sc.original.width() as i32;
-        let img_h = sc.original.height() as i32;
-        // Crop window size in pixels at current zoom
-        let crop_w = ((img_w as f32) / self.zoom).max(1.0) as i32;
-        let crop_h = ((img_h as f32) / self.zoom).max(1.0) as i32;
-        // Max pixel offset from center
-        let max_px_x = ((img_w - crop_w) / 2).max(0);
-        let max_px_y = ((img_h - crop_h) / 2).max(0);
-        // Convert to cells (with rounding up for safety)
-        let max_cell_x = ((max_px_x + fs.width as i32 - 1) / fs.width as i32).max(0) as i16;
-        let max_cell_y = ((max_px_y + fs.height as i32 - 1) / fs.height as i32).max(0) as i16;
+        let viewport_px_w = (self.fullscreen_image_w as u32).saturating_mul(fs.width as u32);
+        let viewport_px_h = (self.fullscreen_image_h as u32).saturating_mul(fs.height as u32);
+        let display = zoom_display_geometry(
+            sc.original.width(),
+            sc.original.height(),
+            viewport_px_w,
+            viewport_px_h,
+            self.zoom,
+        );
+        let max_cell_x = max_pan_cells(display.display_px_w, viewport_px_w, fs.width);
+        let max_cell_y = max_pan_cells(display.display_px_h, viewport_px_h, fs.height);
         self.pan_x = self.pan_x.clamp(-max_cell_x, max_cell_x);
         self.pan_y = self.pan_y.clamp(-max_cell_y, max_cell_y);
     }
@@ -993,22 +1073,22 @@ impl App {
     pub fn pan_left(&mut self) {
         self.pan_x -= self.pan_step_x();
         self.clamp_pan();
-        self.mark_render_dirty();
+        self.mark_render_dirty(RenderDirtyReason::Interaction);
     }
     pub fn pan_right(&mut self) {
         self.pan_x += self.pan_step_x();
         self.clamp_pan();
-        self.mark_render_dirty();
+        self.mark_render_dirty(RenderDirtyReason::Interaction);
     }
     pub fn pan_up(&mut self) {
         self.pan_y -= self.pan_step_y();
         self.clamp_pan();
-        self.mark_render_dirty();
+        self.mark_render_dirty(RenderDirtyReason::Interaction);
     }
     pub fn pan_down(&mut self) {
         self.pan_y += self.pan_step_y();
         self.clamp_pan();
-        self.mark_render_dirty();
+        self.mark_render_dirty(RenderDirtyReason::Interaction);
     }
 }
 
@@ -1026,13 +1106,6 @@ pub enum LoadSize {
 pub struct LoadRequest {
     pub idx: usize,
     pub size: LoadSize,
-}
-
-fn first_protocol(content: FullscreenContent) -> Option<Protocol> {
-    match content {
-        FullscreenContent::Static(sc) => sc.protocol,
-        FullscreenContent::Animation(mut frames) => Some(frames.remove(0).protocol),
-    }
 }
 
 fn frame_delay(delay: image::Delay) -> Duration {
@@ -1060,7 +1133,12 @@ fn make_protocol(
         .ok()
 }
 
+#[cfg(test)]
 fn static_original_content(img: image::DynamicImage) -> FullscreenContent {
+    static_rgba_content(img.into_rgba8())
+}
+
+fn static_rgba_content(img: image::RgbaImage) -> FullscreenContent {
     FullscreenContent::Static(StaticContent {
         protocol: None,
         original: Arc::new(img),
@@ -1118,14 +1196,12 @@ fn try_decode_animation(picker: &Picker, path: &Path, size: Size) -> Option<Full
 }
 
 fn zoom_percent(zoom: f32) -> u16 {
-    let zoom = if zoom.is_finite() { zoom } else { 1.0 };
+    let zoom = normalized_zoom(zoom);
     (zoom * 100.0).round().clamp(1.0, u16::MAX as f32) as u16
 }
 
-fn image_rgba_bytes(image: &image::DynamicImage) -> usize {
-    (image.width() as usize)
-        .saturating_mul(image.height() as usize)
-        .saturating_mul(4)
+fn rgba_bytes(image: &image::RgbaImage) -> usize {
+    image.len()
 }
 
 fn spawn_render_worker(picker: Picker) -> (Sender<RenderRequest>, Receiver<RenderResult>) {
@@ -1186,29 +1262,28 @@ fn render_zoom_protocol(
 
 fn resize_with_fast_image_resize(
     resizer: &mut fir::Resizer,
-    image: &image::DynamicImage,
+    image: &image::RgbaImage,
     geometry: &ZoomRenderGeometry,
     quality: RenderQuality,
 ) -> Option<image::RgbaImage> {
-    let src = image.to_rgba8();
     let mut dst = image::RgbaImage::new(geometry.target_px_w, geometry.target_px_h);
     let algorithm = match quality {
         RenderQuality::Interactive => fir::ResizeAlg::Nearest,
         RenderQuality::Final => fir::ResizeAlg::Convolution(fir::FilterType::Lanczos3),
     };
     let options = fir::ResizeOptions::new().resize_alg(algorithm).crop(
-        f64::from(geometry.crop_x),
-        f64::from(geometry.crop_y),
-        f64::from(geometry.crop_w),
-        f64::from(geometry.crop_h),
+        geometry.source_x,
+        geometry.source_y,
+        geometry.source_w,
+        geometry.source_h,
     );
 
-    resizer.resize(&src, &mut dst, Some(&options)).ok()?;
+    resizer.resize(image, &mut dst, Some(&options)).ok()?;
     Some(dst)
 }
 
 fn resize_with_image_crate(
-    image: &image::DynamicImage,
+    image: &image::RgbaImage,
     geometry: &ZoomRenderGeometry,
     quality: RenderQuality,
 ) -> image::RgbaImage {
@@ -1216,16 +1291,32 @@ fn resize_with_image_crate(
         RenderQuality::Interactive => image::imageops::FilterType::Nearest,
         RenderQuality::Final => image::imageops::FilterType::Lanczos3,
     };
-    let rgba = image.to_rgba8();
-    let cropped = image::imageops::crop_imm(
-        &rgba,
-        geometry.crop_x,
-        geometry.crop_y,
-        geometry.crop_w,
-        geometry.crop_h,
-    )
-    .to_image();
+    let (source_x, source_y, source_w, source_h) = integer_source_rect(image, geometry);
+    let cropped =
+        image::imageops::crop_imm(image, source_x, source_y, source_w, source_h).to_image();
     image::imageops::resize(&cropped, geometry.target_px_w, geometry.target_px_h, filter)
+}
+
+fn integer_source_rect(
+    image: &image::RgbaImage,
+    geometry: &ZoomRenderGeometry,
+) -> (u32, u32, u32, u32) {
+    let img_w = image.width().max(1);
+    let img_h = image.height().max(1);
+    let source_x = geometry
+        .source_x
+        .floor()
+        .clamp(0.0, f64::from(img_w.saturating_sub(1))) as u32;
+    let source_y = geometry
+        .source_y
+        .floor()
+        .clamp(0.0, f64::from(img_h.saturating_sub(1))) as u32;
+    let max_w = img_w.saturating_sub(source_x).max(1);
+    let max_h = img_h.saturating_sub(source_y).max(1);
+    let source_w = rounded_px(geometry.source_w).min(max_w).max(1);
+    let source_h = rounded_px(geometry.source_h).min(max_h).max(1);
+
+    (source_x, source_y, source_w, source_h)
 }
 
 /// Spawn background workers that load thumbnails separately from fullscreen originals.
@@ -1301,41 +1392,65 @@ fn process_load_request(
     req: LoadRequest,
 ) -> Option<LoadResult> {
     let path = paths.get(req.idx)?;
+    match req.size {
+        LoadSize::Thumbnail { w, h } => process_thumbnail_request(picker, path, req.idx, w, h),
+        LoadSize::Original => process_original_request(picker, path, req.idx),
+    }
+}
+
+fn process_thumbnail_request(
+    picker: &Picker,
+    path: &Path,
+    idx: usize,
+    w: u16,
+    h: u16,
+) -> Option<LoadResult> {
     let img = image::open(path).ok()?;
     let font_size = picker.font_size();
-    let dims = (img.width(), img.height());
+    let pixel_w = w as u32 * font_size.width as u32 * 2;
+    let pixel_h = h as u32 * font_size.height as u32 * 2;
+    let dims = Some((img.width(), img.height()));
+    let thumb = img.thumbnail(pixel_w, pixel_h);
+    let protocol = make_protocol(picker, thumb, Size::new(w, h), ProtocolFilterType::Nearest)?;
 
-    let content = match req.size {
-        LoadSize::Thumbnail { w, h } => {
-            let pixel_w = w as u32 * font_size.width as u32 * 2;
-            let pixel_h = h as u32 * font_size.height as u32 * 2;
-            let thumb = img.thumbnail(pixel_w, pixel_h);
-            let protocol = make_protocol(
-                picker,
-                thumb.clone(),
-                Size::new(w, h),
-                ProtocolFilterType::Nearest,
-            )?;
-            FullscreenContent::Static(StaticContent {
-                protocol: Some(protocol),
-                original: Arc::new(thumb),
-            })
-        }
-        LoadSize::Original => {
-            let nat_w = img.width().div_ceil(font_size.width as u32) as u16;
-            let nat_h = img.height().div_ceil(font_size.height as u32) as u16;
-            let protocol_size = Size::new(nat_w.max(1), nat_h.max(1));
-            try_decode_animation(picker, path, protocol_size)
-                .unwrap_or_else(|| static_original_content(img))
-        }
+    Some(LoadResult {
+        idx,
+        size: LoadSize::Thumbnail { w, h },
+        content: LoadContent::Thumbnail(protocol),
+        dims,
+    })
+}
+
+fn process_original_request(picker: &Picker, path: &Path, idx: usize) -> Option<LoadResult> {
+    let dims = image::image_dimensions(path).ok()?;
+    let font_size = picker.font_size();
+    let nat_w = dims.0.div_ceil(font_size.width as u32) as u16;
+    let nat_h = dims.1.div_ceil(font_size.height as u32) as u16;
+    let protocol_size = Size::new(nat_w.max(1), nat_h.max(1));
+
+    let content = if should_probe_animation(path) {
+        try_decode_animation(picker, path, protocol_size)
+    } else {
+        None
+    };
+    let content = match content {
+        Some(content) => content,
+        None => static_rgba_content(image::open(path).ok()?.into_rgba8()),
     };
 
     Some(LoadResult {
-        idx: req.idx,
-        size: req.size,
-        content,
+        idx,
+        size: LoadSize::Original,
+        content: LoadContent::Original(content),
         dims: Some(dims),
     })
+}
+
+fn should_probe_animation(path: &Path) -> bool {
+    matches!(
+        image::ImageFormat::from_path(path).ok(),
+        Some(image::ImageFormat::Gif | image::ImageFormat::Png | image::ImageFormat::WebP)
+    )
 }
 
 #[cfg(test)]
@@ -1404,7 +1519,7 @@ mod tests {
     fn make_static_content(width: u32, height: u32) -> FullscreenContent {
         FullscreenContent::Static(StaticContent {
             protocol: Some(make_protocol()),
-            original: Arc::new(image::DynamicImage::new_rgba8(width, height)),
+            original: Arc::new(image::RgbaImage::new(width, height)),
         })
     }
 
@@ -1442,6 +1557,13 @@ mod tests {
             ]),
             Some((1, 1)),
             now,
+        );
+    }
+
+    fn assert_close(actual: f64, expected: f64) {
+        assert!(
+            (actual - expected).abs() < 0.01,
+            "expected {actual} to be close to {expected}"
         );
     }
 
@@ -1575,6 +1697,84 @@ mod tests {
     }
 
     #[test]
+    fn process_original_request_returns_animation_for_gif() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("animated.gif");
+        {
+            let file = File::create(&path).unwrap();
+            let mut encoder = image::codecs::gif::GifEncoder::new(file);
+            encoder
+                .encode_frames(vec![
+                    make_colored_image_frame(100, [255, 0, 0, 255]),
+                    make_colored_image_frame(120, [0, 255, 0, 255]),
+                ])
+                .unwrap();
+        }
+
+        let picker = Picker::halfblocks();
+        let result = process_original_request(&picker, &path, 7).unwrap();
+
+        assert_eq!(result.idx, 7);
+        assert_eq!(result.size, LoadSize::Original);
+        assert_eq!(result.dims, Some((1, 1)));
+        match result.content {
+            LoadContent::Original(FullscreenContent::Animation(frames)) => {
+                assert_eq!(frames.len(), 2);
+            }
+            _ => panic!("expected animated original content"),
+        }
+    }
+
+    #[test]
+    fn process_original_request_decodes_static_jpeg_to_rgba() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("static.jpg");
+        image::DynamicImage::ImageRgb8(image::RgbImage::from_pixel(3, 2, image::Rgb([10, 20, 30])))
+            .save(&path)
+            .unwrap();
+
+        let picker = Picker::halfblocks();
+        let result = process_original_request(&picker, &path, 2).unwrap();
+
+        assert_eq!(result.idx, 2);
+        assert_eq!(result.size, LoadSize::Original);
+        assert_eq!(result.dims, Some((3, 2)));
+        match result.content {
+            LoadContent::Original(FullscreenContent::Static(sc)) => {
+                assert!(sc.protocol.is_none());
+                assert_eq!(sc.original.width(), 3);
+                assert_eq!(sc.original.height(), 2);
+                assert_eq!(sc.original.len(), 3 * 2 * 4);
+            }
+            _ => panic!("expected static original content"),
+        }
+    }
+
+    #[test]
+    fn process_thumbnail_request_returns_protocol_only() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("thumb.png");
+        image::DynamicImage::ImageRgba8(image::RgbaImage::from_pixel(
+            4,
+            3,
+            image::Rgba([1, 2, 3, 255]),
+        ))
+        .save(&path)
+        .unwrap();
+
+        let picker = Picker::halfblocks();
+        let result = process_thumbnail_request(&picker, &path, 5, 8, 4).unwrap();
+
+        assert_eq!(result.idx, 5);
+        assert_eq!(result.size, LoadSize::Thumbnail { w: 8, h: 4 });
+        assert_eq!(result.dims, Some((4, 3)));
+        match result.content {
+            LoadContent::Thumbnail(protocol) => assert!(protocol.size().width <= 8),
+            LoadContent::Original(_) => panic!("expected thumbnail protocol"),
+        }
+    }
+
+    #[test]
     fn static_original_content_has_no_protocol_until_rendered() {
         let content = static_original_content(image::DynamicImage::new_rgba8(10, 20));
 
@@ -1636,14 +1836,112 @@ mod tests {
     }
 
     #[test]
+    fn interaction_dirty_uses_interactive_even_for_small_viewport() {
+        let mut app = make_app(1);
+        let now = Instant::now();
+        app.state = AppState::Fullscreen;
+        app.set_fullscreen_content(
+            static_original_content(image::DynamicImage::new_rgba8(400, 300)),
+            Some((400, 300)),
+            now,
+        );
+        app.set_fullscreen_viewport(20, 10);
+        app.zoom_dirty = false;
+        app.render_dirty_reason = None;
+
+        app.zoom_in();
+        let interactive_key = app.current_render_key(RenderQuality::Interactive).unwrap();
+        let final_key = app.current_render_key(RenderQuality::Final).unwrap();
+        app.fullscreen_render_cache
+            .put(final_key.clone(), make_protocol());
+        app.fullscreen_render_cache
+            .put(interactive_key.clone(), make_protocol());
+
+        app.drive_render_queue(now);
+
+        assert!(!app.zoom_dirty);
+        assert_eq!(app.fullscreen_protocol_key, Some(interactive_key));
+        assert_eq!(
+            app.next_render_deadline(),
+            Some(now + INTERACTIVE_SETTLE_DELAY)
+        );
+    }
+
+    #[test]
+    fn interaction_settle_renders_final_quality() {
+        let mut app = make_app(1);
+        let now = Instant::now();
+        app.state = AppState::Fullscreen;
+        app.set_fullscreen_content(
+            static_original_content(image::DynamicImage::new_rgba8(400, 300)),
+            Some((400, 300)),
+            now,
+        );
+        app.set_fullscreen_viewport(20, 10);
+        app.zoom_dirty = false;
+        app.render_dirty_reason = None;
+
+        app.zoom_in();
+        let interactive_key = app.current_render_key(RenderQuality::Interactive).unwrap();
+        let final_key = app.current_render_key(RenderQuality::Final).unwrap();
+        app.fullscreen_render_cache
+            .put(interactive_key.clone(), make_protocol());
+        app.fullscreen_render_cache
+            .put(final_key.clone(), make_protocol());
+
+        app.drive_render_queue(now);
+        app.drive_render_queue(now + INTERACTIVE_SETTLE_DELAY);
+
+        assert_eq!(app.fullscreen_protocol_key, Some(final_key));
+        assert!(app.next_render_deadline().is_none());
+    }
+
+    #[test]
+    fn content_dirty_large_viewport_uses_interactive_then_final() {
+        let mut app = make_app(1);
+        let now = Instant::now();
+        app.state = AppState::Fullscreen;
+        app.set_fullscreen_content(
+            static_original_content(image::DynamicImage::new_rgba8(4000, 3000)),
+            Some((4000, 3000)),
+            now,
+        );
+        app.set_fullscreen_viewport(2000, 1000);
+        let interactive_key = app.current_render_key(RenderQuality::Interactive).unwrap();
+        let final_key = app.current_render_key(RenderQuality::Final).unwrap();
+        app.fullscreen_render_cache
+            .put(final_key.clone(), make_protocol());
+        app.fullscreen_render_cache
+            .put(interactive_key.clone(), make_protocol());
+
+        app.drive_render_queue(now);
+
+        assert_eq!(app.fullscreen_protocol_key, Some(interactive_key));
+        assert_eq!(
+            app.next_render_deadline(),
+            Some(now + INTERACTIVE_SETTLE_DELAY)
+        );
+    }
+
+    #[test]
+    fn fullscreen_original_cache_accounts_rgba_bytes() {
+        let mut app = make_app(1);
+
+        app.insert_fullscreen_original(0, Arc::new(image::RgbaImage::new(10, 20)));
+
+        assert_eq!(app.fullscreen_original_cache_bytes, 10 * 20 * 4);
+        assert_eq!(
+            app.cached_fullscreen_original(0).map(|image| image.len()),
+            Some(10 * 20 * 4)
+        );
+    }
+
+    #[test]
     fn fullscreen_original_cache_evicts_to_budget_and_keeps_selected() {
         let mut app = make_app(3);
         app.selected = 0;
         for idx in 0..3 {
-            app.insert_fullscreen_original(
-                idx,
-                Arc::new(image::DynamicImage::new_rgba8(4096, 4096)),
-            );
+            app.insert_fullscreen_original(idx, Arc::new(image::RgbaImage::new(4096, 4096)));
         }
 
         assert!(app.fullscreen_original_cache_bytes <= FULLSCREEN_ORIGINAL_CACHE_BYTES);
@@ -1657,10 +1955,7 @@ mod tests {
         let mut app = make_app(2);
         app.selected = 0;
         for idx in 0..2 {
-            app.insert_fullscreen_original(
-                idx,
-                Arc::new(image::DynamicImage::new_rgba8(5000, 5000)),
-            );
+            app.insert_fullscreen_original(idx, Arc::new(image::RgbaImage::new(5000, 5000)));
         }
 
         assert!(app.fullscreen_original_cache_bytes <= FULLSCREEN_ORIGINAL_CACHE_BYTES);
@@ -2010,8 +2305,8 @@ mod tests {
         app.state = AppState::Fullscreen;
         app.fullscreen_image_w = 80;
         app.fullscreen_image_h = 40;
-        // Use large image so native resolution > viewport → pan room when zoomed
-        let img = image::DynamicImage::new_rgba8(4000, 3000);
+        // Match the viewport aspect so both axes have pan room when zoomed.
+        let img = image::RgbaImage::new(3000, 3000);
         app.picker = Picker::halfblocks();
         app.fullscreen_content = Some(FullscreenContent::Static(StaticContent {
             protocol: Some(make_protocol()), // placeholder
@@ -2039,28 +2334,33 @@ mod tests {
 
         assert_eq!(geometry.target_px_w, 533);
         assert_eq!(geometry.target_px_h, 400);
-        assert_eq!(geometry.crop_w, 4000);
-        assert_eq!(geometry.crop_h, 3000);
+        assert_close(geometry.source_x, 0.0);
+        assert_close(geometry.source_y, 0.0);
+        assert_close(geometry.source_w, 4000.0);
+        assert_close(geometry.source_h, 3000.0);
     }
 
     #[test]
-    fn zoom_geometry_scales_down_target_when_zoomed_out() {
+    fn zoom_geometry_clamps_zoom_below_100_percent_to_fit() {
         let geometry = zoom_render_geometry(4000, 3000, 800, 400, 0.5, 0, 0);
-
-        assert_eq!(geometry.target_px_w, 267);
-        assert_eq!(geometry.target_px_h, 200);
-        assert_eq!(geometry.crop_w, 4000);
-        assert_eq!(geometry.crop_h, 3000);
-    }
-
-    #[test]
-    fn zoom_geometry_crops_source_when_zoomed_in() {
-        let geometry = zoom_render_geometry(4000, 3000, 800, 400, 1.1, 0, 0);
 
         assert_eq!(geometry.target_px_w, 533);
         assert_eq!(geometry.target_px_h, 400);
-        assert!(geometry.crop_w < 4000);
-        assert!(geometry.crop_h < 3000);
+        assert_close(geometry.source_w, 4000.0);
+        assert_close(geometry.source_h, 3000.0);
+    }
+
+    #[test]
+    fn zoom_geometry_crops_visible_viewport_from_scaled_whole_image() {
+        let geometry = zoom_render_geometry(4000, 3000, 800, 400, 2.0, 0, 0);
+
+        assert_eq!(geometry.target_px_w, 800);
+        assert_eq!(geometry.target_px_h, 400);
+        assert_close(geometry.source_x, 500.0);
+        assert_close(geometry.source_y, 750.0);
+        assert_close(geometry.source_w, 3000.0);
+        assert_close(geometry.source_h, 1500.0);
+        assert!(u64::from(geometry.target_px_w) * u64::from(geometry.target_px_h) <= 800 * 400);
     }
 
     #[test]
@@ -2069,5 +2369,91 @@ mod tests {
 
         assert_eq!(geometry.target_px_w, 300);
         assert_eq!(geometry.target_px_h, 225);
+    }
+
+    #[test]
+    fn zoom_geometry_pan_direction_matches_view_movement() {
+        let centered = zoom_render_geometry(4000, 3000, 800, 400, 2.0, 0, 0);
+        let right = zoom_render_geometry(4000, 3000, 800, 400, 2.0, 100, 0);
+        let left = zoom_render_geometry(4000, 3000, 800, 400, 2.0, -100, 0);
+        let down = zoom_render_geometry(4000, 3000, 800, 400, 2.0, 0, 100);
+        let up = zoom_render_geometry(4000, 3000, 800, 400, 2.0, 0, -100);
+
+        assert!(right.source_x > centered.source_x);
+        assert!(left.source_x < centered.source_x);
+        assert!(down.source_y > centered.source_y);
+        assert!(up.source_y < centered.source_y);
+    }
+
+    #[test]
+    fn pan_room_exists_only_on_overflow_axes() {
+        let font_px = 10;
+        let wide = zoom_display_geometry(4000, 1000, 800, 400, 1.5);
+        assert!(max_pan_cells(wide.display_px_w, 800, font_px) > 0);
+        assert_eq!(max_pan_cells(wide.display_px_h, 400, font_px), 0);
+
+        let tall = zoom_display_geometry(1000, 4000, 800, 400, 1.5);
+        assert_eq!(max_pan_cells(tall.display_px_w, 800, font_px), 0);
+        assert!(max_pan_cells(tall.display_px_h, 400, font_px) > 0);
+
+        let square = zoom_display_geometry(1000, 1000, 800, 400, 2.0);
+        assert_eq!(max_pan_cells(square.display_px_w, 800, font_px), 0);
+        assert!(max_pan_cells(square.display_px_h, 400, font_px) > 0);
+    }
+
+    #[test]
+    fn clamp_pan_zeroes_axes_without_overflow_at_100_percent() {
+        let mut app = make_app(1);
+        app.state = AppState::Fullscreen;
+        app.set_fullscreen_content(
+            make_static_content(4000, 3000),
+            Some((4000, 3000)),
+            Instant::now(),
+        );
+        app.set_fullscreen_viewport(80, 40);
+        app.pan_x = 10;
+        app.pan_y = -10;
+
+        app.clamp_pan();
+
+        assert_eq!(app.pan_x, 0);
+        assert_eq!(app.pan_y, 0);
+    }
+
+    #[test]
+    fn clamp_pan_allows_only_axes_that_overflow_after_zoom() {
+        let mut wide = make_app(1);
+        wide.state = AppState::Fullscreen;
+        wide.set_fullscreen_content(
+            make_static_content(4000, 1000),
+            Some((4000, 1000)),
+            Instant::now(),
+        );
+        wide.set_fullscreen_viewport(80, 40);
+        wide.zoom = 1.5;
+        wide.pan_x = 1000;
+        wide.pan_y = 1000;
+
+        wide.clamp_pan();
+
+        assert!(wide.pan_x > 0);
+        assert_eq!(wide.pan_y, 0);
+
+        let mut tall = make_app(1);
+        tall.state = AppState::Fullscreen;
+        tall.set_fullscreen_content(
+            make_static_content(1000, 4000),
+            Some((1000, 4000)),
+            Instant::now(),
+        );
+        tall.set_fullscreen_viewport(80, 40);
+        tall.zoom = 1.5;
+        tall.pan_x = -1000;
+        tall.pan_y = -1000;
+
+        tall.clamp_pan();
+
+        assert_eq!(tall.pan_x, 0);
+        assert!(tall.pan_y < 0);
     }
 }

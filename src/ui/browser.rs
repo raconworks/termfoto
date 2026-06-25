@@ -316,14 +316,55 @@ pub fn populate_protocol_cache(
     let start = app.scroll_row * app.grid_cols;
     let visible_end = (start + app.visible_rows * app.grid_cols).min(app.images.len());
 
-    // Prefetch: extend range by ±1 row
-    let prefetch_start = start.saturating_sub(app.grid_cols);
-    let prefetch_end = (visible_end + app.grid_cols).min(app.images.len());
-
-    for slot in prefetch_start..prefetch_end {
+    for slot in thumbnail_request_order(start, visible_end, app.grid_cols, app.images.len()) {
         if app.protocol_cache.contains_key(&slot) || app.requested.contains(&(slot, size.clone())) {
             continue;
         }
         app.request_load(slot, size.clone());
+    }
+}
+
+fn thumbnail_request_order(
+    visible_start: usize,
+    visible_end: usize,
+    grid_cols: usize,
+    total_images: usize,
+) -> Vec<usize> {
+    let visible_start = visible_start.min(total_images);
+    let visible_end = visible_end.min(total_images).max(visible_start);
+    let prefetch_start = visible_start.saturating_sub(grid_cols);
+    let prefetch_end = (visible_end + grid_cols).min(total_images);
+
+    let mut slots = Vec::with_capacity(prefetch_end.saturating_sub(prefetch_start));
+    slots.extend(visible_start..visible_end);
+    slots.extend(prefetch_start..visible_start);
+    slots.extend(visible_end..prefetch_end);
+    slots
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn thumbnail_request_order_prioritizes_visible_slots() {
+        let slots = thumbnail_request_order(8, 24, 8, 40);
+
+        assert_eq!(
+            slots,
+            vec![
+                8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 0, 1, 2, 3, 4, 5, 6,
+                7, 24, 25, 26, 27, 28, 29, 30, 31,
+            ]
+        );
+    }
+
+    #[test]
+    fn thumbnail_request_order_clamps_edges() {
+        assert_eq!(thumbnail_request_order(0, 6, 8, 6), vec![0, 1, 2, 3, 4, 5]);
+        assert_eq!(
+            thumbnail_request_order(16, 24, 8, 20),
+            vec![16, 17, 18, 19, 8, 9, 10, 11, 12, 13, 14, 15]
+        );
     }
 }
