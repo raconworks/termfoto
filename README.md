@@ -17,10 +17,10 @@
 | | |
 |---|---|
 | 🎨 **High-quality chafa rendering** | Unicode chars + true color half-blocks — a magnitude sharper than sixel |
-| ⚡ **Non-blocking async loading** | Image decoding & chafa encoding run on background threads — zero UI jank |
-| 🖼 **Original-size fullscreen** | No scaling, no distortion — pixel-accurate, centered display |
+| ⚡ **Non-blocking async loading** | Thumbnail loading, original decoding, and fullscreen rendering stay off the main thread |
+| 🖼 **Fullscreen zoom & pan** | Fit-to-window display with fast interactive zoom, pan, and final high-quality redraw |
 | ⌨ **Keyboard-only navigation** | Vim-style bindings — keep your hands where they matter |
-| 🪶 **Extremely lightweight** | No GUI framework — only 4 core dependencies |
+| 🪶 **Extremely lightweight** | No GUI framework — a small Rust-native dependency set |
 | 📂 **Instant startup** | No indexing, no recursive scanning, no metadata cache — open and browse |
 
 ## 🎯 Design Philosophy
@@ -110,6 +110,10 @@ termfoto --version       # print version
 | Search | `Tab` · `Shift+Tab` | Next/prev match |
 | Search | `Enter` | Fullscreen match |
 | Fullscreen | `←` `→` | Prev/next image |
+| Fullscreen | `+` · `=` | Zoom in |
+| Fullscreen | `-` | Zoom out |
+| Fullscreen | `0` | Reset zoom and pan |
+| Fullscreen | `h` `j` `k` `l` | Pan left/down/up/right |
 | Fullscreen | `L` | Toggle EN/中文 |
 | Fullscreen | `Enter` · `Esc` · `q` | Back to browser |
 | Fullscreen | `Ctrl+C` | Quit |
@@ -120,7 +124,10 @@ termfoto --version       # print version
 |------------|---------|
 | [ratatui](https://ratatui.rs) | TUI framework |
 | [ratatui-image](https://github.com/ratatui/ratatui-image) + [chafa](https://hpjansson.org/chafa/) | Image → Unicode character rendering |
-| [image](https://github.com/image-rs/image) | Image decoding (PNG/JPEG/WebP) |
+| [crossterm](https://github.com/crossterm-rs/crossterm) | Terminal input and raw-mode control |
+| [image](https://github.com/image-rs/image) | Image decoding (PNG/JPEG/WebP/GIF) |
+| [fast_image_resize](https://github.com/Cykooz/fast_image_resize) | Fast interactive fullscreen resize/crop |
+| [lru](https://github.com/jeromefroe/lru-rs) | Bounded fullscreen original/render caches |
 
 ## 📜 License
 

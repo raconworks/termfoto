@@ -2,7 +2,7 @@
 
 ## Project Structure & Module Organization
 
-`termfoto` is a Rust terminal image browser. The binary entry point is `src/main.rs`, which handles CLI parsing, terminal setup, the event loop, and grid sizing. Core state, navigation, caching, and background image loading live in `src/app.rs`. Directory scanning is in `src/scanner.rs`, language strings are in `src/lang.rs`, and UI widgets are under `src/ui/` (`browser.rs`, `preview.rs`, `search.rs`, `mod.rs`). Static docs assets live in `assets/`. The `npm/` directory is a thin distribution wrapper. GitHub Actions workflows are in `.github/workflows/`.
+`termfoto` is a Rust terminal image browser. The binary entry point is `src/main.rs`, which handles CLI parsing, terminal setup, the event loop, and grid sizing. Core state, navigation, caching, background image loading, fullscreen render scheduling, and zoom/pan logic live in `src/app.rs`. Directory scanning is in `src/scanner.rs`, language strings are in `src/lang.rs`, and UI widgets are under `src/ui/` (`browser.rs`, `preview.rs`, `search.rs`, `mod.rs`). Static docs assets live in `assets/`. The `npm/` directory is a thin distribution wrapper. GitHub Actions workflows are in `.github/workflows/`.
 
 ## Build, Test, and Development Commands
 
@@ -23,11 +23,11 @@ Use Rust 2021 style and `rustfmt` defaults. Keep modules focused on their curren
 
 ## Testing Guidelines
 
-Tests are inline `#[cfg(test)]` modules in the source files they cover. Existing coverage focuses on navigation, search scoring, language selection, and scanner behavior. Add focused unit tests near changed logic, especially for keyboard behavior, search results, supported image extensions, cache limits, and path handling. Run `cargo test` before submitting changes.
+Tests are inline `#[cfg(test)]` modules in the source files they cover. Existing coverage focuses on navigation, search scoring, language selection, scanner behavior, fullscreen rendering, loader routing, and cache behavior. Add focused unit tests near changed logic, especially for keyboard behavior, search results, supported image extensions, cache limits, render quality selection, thumbnail request order, and path handling. Run `cargo test` before submitting changes.
 
 ## Commit & Pull Request Guidelines
 
-Recent history uses Conventional Commit prefixes such as `fix:`, `docs:`, and `chore:`, often with concise Chinese descriptions. Keep commits scoped and imperative, for example `fix: handle empty image directory`. Pull requests should include a short summary, test results, linked issues when applicable, and screenshots or terminal captures for visible UI changes. Mention release-impacting changes to `Cargo.toml`, `Cargo.lock`, `npm/package.json`, or workflow files.
+Use English commit messages with Conventional Commit prefixes such as `fix:`, `docs:`, and `chore:`. Keep commits scoped and imperative, for example `fix: handle empty image directory`. Pull requests should include a short summary, test results, linked issues when applicable, and screenshots or terminal captures for visible UI changes. Mention release-impacting changes to `Cargo.toml`, `Cargo.lock`, `npm/package.json`, or workflow files.
 
 ## Agent-Specific Instructions
 

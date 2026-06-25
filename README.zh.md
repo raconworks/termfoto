@@ -17,10 +17,10 @@
 | | |
 |---|---|
 | 🎨 **chafa 高质量渲染** | Unicode 字符 + true color 半块，比 sixel 清晰一个量级 |
-| ⚡ **零阻塞异步加载** | 图片解码和 chafa 编码全在后台线程，滚动丝滑不卡 UI |
-| 🖼 **原图尺寸全屏** | 不缩放、不失真，像素级精确居中显示 |
+| ⚡ **零阻塞异步加载** | 缩略图加载、原图解码和全屏渲染都在后台线程执行 |
+| 🖼 **全屏缩放与平移** | 自适应窗口显示，交互缩放/平移响应快，停止后自动补高质量渲染 |
 | ⌨ **纯键盘操作** | Vim 式导航，手不离键盘，操作即响应 |
-| 🪶 **极致轻量** | 无 GUI 框架，核心依赖仅 4 个 crate |
+| 🪶 **极致轻量** | 无 GUI 框架，依赖保持小而专注 |
 | 📂 **即时启动** | 不建索引、不扫子目录、不缓存元数据，打开即浏览 |
 
 ## 🎯 设计哲学
@@ -110,6 +110,10 @@ termfoto --version       # 显示版本号
 | 搜索 | `Tab` · `Shift+Tab` | 上/下一个结果 |
 | 搜索 | `Enter` | 全屏当前结果 |
 | 全屏 | `←` `→` | 上/下一张 |
+| 全屏 | `+` · `=` | 放大 |
+| 全屏 | `-` | 缩小 |
+| 全屏 | `0` | 重置缩放和平移 |
+| 全屏 | `h` `j` `k` `l` | 左/下/上/右平移 |
 | 全屏 | `L` | 切换中/英文 |
 | 全屏 | `Enter` · `Esc` · `q` | 返回浏览器 |
 | 全屏 | `Ctrl+C` | 退出 |
@@ -120,7 +124,10 @@ termfoto --version       # 显示版本号
 |------|------|
 | [ratatui](https://ratatui.rs) | TUI 框架 |
 | [ratatui-image](https://github.com/ratatui/ratatui-image) + [chafa](https://hpjansson.org/chafa/) | 图片 → Unicode 字符渲染 |
-| [image](https://github.com/image-rs/image) | 图片解码（PNG/JPEG/WebP） |
+| [crossterm](https://github.com/crossterm-rs/crossterm) | 终端输入和 raw mode 控制 |
+| [image](https://github.com/image-rs/image) | 图片解码（PNG/JPEG/WebP/GIF） |
+| [fast_image_resize](https://github.com/Cykooz/fast_image_resize) | 全屏交互裁剪/缩放快速重采样 |
+| [lru](https://github.com/jeromefroe/lru-rs) | 有界全屏原图和渲染缓存 |
 
 ## 📜 许可证
 
