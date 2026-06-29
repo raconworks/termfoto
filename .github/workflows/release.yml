@@ -3,12 +3,16 @@ name: Release
 on:
   push:
     tags: ["v*"]
+  release:
+    types: [published]
 
 jobs:
   release:
     runs-on: ubuntu-latest
     permissions:
       contents: write
+    env:
+      RELEASE_TAG: ${{ github.event.release.tag_name || github.ref_name }}
     steps:
       - uses: actions/checkout@v4
 
@@ -22,7 +26,7 @@ jobs:
 
       - name: 从 tag 同步版本号
         run: |
-          TAG_VERSION="${GITHUB_REF_NAME#v}"
+          TAG_VERSION="${RELEASE_TAG#v}"
           sed -i "s/^version = .*/version = \"${TAG_VERSION}\"/" Cargo.toml
           echo "Synced Cargo.toml version to ${TAG_VERSION}"
 
@@ -31,7 +35,7 @@ jobs:
 
       - name: 打包 .deb
         run: |
-          VERSION="${GITHUB_REF_NAME#v}"
+          VERSION="${RELEASE_TAG#v}"
           PKG="termfoto_${VERSION}_amd64"
           mkdir -p "${PKG}/DEBIAN"
           mkdir -p "${PKG}/usr/local/bin"
@@ -45,8 +49,6 @@ jobs:
           EOF
           dpkg-deb --build "${PKG}"
           cp "${PKG}.deb" termfoto_latest_amd64.deb
-        env:
-          GITHUB_REF_NAME: ${{ github.ref_name }}
 
       - name: 发布到 GitHub Releases
         uses: softprops/action-gh-release@v1
@@ -57,6 +59,8 @@ jobs:
 
   publish:
     runs-on: ubuntu-latest
+    env:
+      RELEASE_TAG: ${{ github.event.release.tag_name || github.ref_name }}
     steps:
       - uses: actions/checkout@v4
 
@@ -65,7 +69,7 @@ jobs:
 
       - name: 从 tag 同步版本号
         run: |
-          TAG_VERSION="${GITHUB_REF_NAME#v}"
+          TAG_VERSION="${RELEASE_TAG#v}"
           sed -i "s/^version = .*/version = \"${TAG_VERSION}\"/" Cargo.toml
           echo "Synced Cargo.toml version to ${TAG_VERSION}"
 
@@ -77,6 +81,8 @@ jobs:
   npm-publish:
     needs: release
     runs-on: ubuntu-latest
+    env:
+      RELEASE_TAG: ${{ github.event.release.tag_name || github.ref_name }}
     steps:
       - uses: actions/checkout@v4
 
@@ -87,7 +93,7 @@ jobs:
 
       - name: 从 tag 同步版本号
         run: |
-          TAG_VERSION="${GITHUB_REF_NAME#v}"
+          TAG_VERSION="${RELEASE_TAG#v}"
           cd npm
           npm version "${TAG_VERSION}" --no-git-tag-version --allow-same-version
           echo "Synced npm version to ${TAG_VERSION}"
