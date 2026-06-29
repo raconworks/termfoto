@@ -1329,8 +1329,12 @@ fn browser_directory_context_entries(context_dir: &Path) -> Vec<DirectoryContext
             if !file_type.is_dir() {
                 return None;
             }
+            let name = entry.file_name().to_string_lossy().into_owned();
+            if name.starts_with('.') {
+                return None;
+            }
             Some(DirectoryContextEntry {
-                name: entry.file_name().to_string_lossy().into_owned(),
+                name,
                 path: entry.path(),
                 kind: DirectoryContextKind::Directory,
                 is_current: false,
@@ -1849,6 +1853,7 @@ mod tests {
         fs::create_dir(&photos).unwrap();
         fs::create_dir(photos.join("z_album")).unwrap();
         fs::create_dir(photos.join("a_album")).unwrap();
+        fs::create_dir(photos.join(".hidden")).unwrap();
         fs::write(photos.join("note.txt"), b"note").unwrap();
         write_png(&photos.join("photo.png"));
 
@@ -1860,6 +1865,7 @@ mod tests {
         let names: Vec<_> = entries.iter().map(|entry| entry.name.as_str()).collect();
 
         assert_eq!(names, vec!["photos", "a_album", "z_album"]);
+        assert!(!names.contains(&".hidden"));
         assert!(entries[0].is_current);
         assert_eq!(entries[0].depth, 0);
         assert!(entries[1..].iter().all(|entry| entry.depth == 1));
