@@ -25,7 +25,7 @@ impl Drop for TermGuard {
 }
 
 use std::io;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use anyhow::Result;
@@ -68,13 +68,14 @@ fn main() -> Result<()> {
             (images, image_dir, AppState::Browser, 0_usize)
         }
         Some(ref p) if p.is_dir() => {
-            let images = scan_directory(p)?;
-            (images, p.clone(), AppState::Browser, 0_usize)
+            let image_dir = absolute_path(p)?;
+            let images = scan_directory(&image_dir)?;
+            (images, image_dir, AppState::Browser, 0_usize)
         }
         Some(ref p) if p.is_file() && scanner::is_supported_image(p) => {
-            let parent = p.parent().unwrap_or_else(|| std::path::Path::new("."));
-            let image_dir = parent.to_path_buf();
-            let images = scan_directory(parent)?;
+            let parent = p.parent().unwrap_or_else(|| Path::new("."));
+            let image_dir = absolute_path(parent)?;
+            let images = scan_directory(&image_dir)?;
             // Find the index of the specified file in the scanned list.
             // scan_directory normalises filenames so we compare by filename.
             let target_name = p.file_name().and_then(|n| n.to_str()).unwrap_or("");
@@ -98,6 +99,14 @@ fn main() -> Result<()> {
     let mut terminal = Terminal::new(backend)?;
 
     run(&mut terminal, images, image_dir, initial_state, selected)
+}
+
+fn absolute_path(path: &Path) -> Result<PathBuf> {
+    if path.is_absolute() {
+        Ok(path.to_path_buf())
+    } else {
+        Ok(std::env::current_dir()?.join(path))
+    }
 }
 
 fn print_help() {
@@ -213,4 +222,26 @@ fn run(
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn absolute_path_expands_relative_path_from_current_dir() {
+        let current = std::env::current_dir().unwrap();
+
+        let path = absolute_path(Path::new("photos")).unwrap();
+
+        assert_eq!(path, current.join("photos"));
+        assert!(path.is_absolute());
+    }
+
+    #[test]
+    fn absolute_path_keeps_absolute_path() {
+        let path = PathBuf::from("/tmp/termfoto");
+
+        assert_eq!(absolute_path(&path).unwrap(), path);
+    }
 }
