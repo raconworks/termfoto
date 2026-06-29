@@ -2,7 +2,7 @@ use std::collections::{HashMap, HashSet};
 use std::fs::File;
 use std::io::BufReader;
 use std::num::NonZeroUsize;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::{
     mpsc::{Receiver, Sender},
     Arc,
@@ -66,6 +66,7 @@ pub enum AppState {
 pub struct App {
     pub state: AppState,
     pub images: Vec<ImageEntry>,
+    pub image_dir: PathBuf,
     pub selected: usize,
     pub scroll_row: usize,
     pub protocol_cache: HashMap<usize, Protocol>,
@@ -103,9 +104,15 @@ pub struct App {
     load_rx: Receiver<LoadResult>,
 }
 
+pub struct AppStart {
+    pub images: Vec<ImageEntry>,
+    pub image_dir: PathBuf,
+    pub state: AppState,
+    pub selected: usize,
+}
+
 pub const MIN_CELL: u16 = 24;
 pub const LOGO_HEIGHT: u16 = 3;
-pub const MIN_LOGO_WIDTH: u16 = 70;
 const MAX_CACHE_SIZE: usize = 200;
 const ZOOM_STEP: f32 = 0.10;
 const ZOOM_MIN: f32 = 1.0;
@@ -191,6 +198,19 @@ struct RenderResult {
     protocol: Protocol,
     key: RenderKey,
     generation: u64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DirectoryContextKind {
+    Directory,
+    File,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DirectoryContextEntry {
+    pub name: String,
+    pub kind: DirectoryContextKind,
+    pub is_current: bool,
 }
 
 fn zoom_render_geometry(
@@ -290,20 +310,25 @@ fn max_pan_cells(display_px: f64, viewport_px: u32, font_px: u16) -> i16 {
 
 impl App {
     pub fn new(
-        images: Vec<ImageEntry>,
-        state: AppState,
-        selected: usize,
+        start: AppStart,
         load_tx: Sender<LoadRequest>,
         load_rx: Receiver<LoadResult>,
         lang: Lang,
         picker: Picker,
     ) -> Self {
+        let AppStart {
+            images,
+            image_dir,
+            state,
+            selected,
+        } = start;
         let selected = selected.min(images.len().saturating_sub(1));
         let fullscreen_pending = state == AppState::Fullscreen;
         let (render_tx, render_rx) = spawn_render_worker(picker.clone());
         let mut app = Self {
             state,
             images,
+            image_dir,
             selected,
             scroll_row: 0,
             protocol_cache: HashMap::new(),
@@ -348,6 +373,19 @@ impl App {
             app.prepare_fullscreen_selection();
         }
         app
+    }
+
+    pub fn directory_context_for_browser(&self) -> Vec<DirectoryContextEntry> {
+        let parent = context_parent(self.image_dir.as_path());
+        directory_context_entries(parent, Some(self.image_dir.as_path()))
+    }
+
+    pub fn directory_context_for_fullscreen(&self) -> Vec<DirectoryContextEntry> {
+        let Some(entry) = self.images.get(self.selected) else {
+            return Vec::new();
+        };
+        let parent = context_parent(entry.path.as_path());
+        directory_context_entries(parent, Some(entry.path.as_path()))
     }
 
     pub fn navigate_left(&mut self) {
@@ -1092,6 +1130,71 @@ impl App {
     }
 }
 
+fn directory_context_entries(
+    dir: &Path,
+    current_path: Option<&Path>,
+) -> Vec<DirectoryContextEntry> {
+    let Ok(read_dir) = std::fs::read_dir(dir) else {
+        return Vec::new();
+    };
+
+    let mut entries: Vec<_> = read_dir
+        .filter_map(|res| res.ok())
+        .filter_map(|entry| {
+            let path = entry.path();
+            let file_type = entry.file_type().ok()?;
+            let kind = if file_type.is_dir() {
+                DirectoryContextKind::Directory
+            } else if file_type.is_file() {
+                DirectoryContextKind::File
+            } else {
+                return None;
+            };
+            let name = entry.file_name().to_string_lossy().into_owned();
+            let is_current =
+                current_path.is_some_and(|current| context_paths_match(&path, current));
+            Some(DirectoryContextEntry {
+                name,
+                kind,
+                is_current,
+            })
+        })
+        .collect();
+
+    entries.sort_by(|a, b| {
+        let rank_a = match a.kind {
+            DirectoryContextKind::Directory => 0,
+            DirectoryContextKind::File => 1,
+        };
+        let rank_b = match b.kind {
+            DirectoryContextKind::Directory => 0,
+            DirectoryContextKind::File => 1,
+        };
+        rank_a.cmp(&rank_b).then_with(|| a.name.cmp(&b.name))
+    });
+    entries
+}
+
+fn context_parent(path: &Path) -> &Path {
+    match path.parent() {
+        Some(parent) if parent.as_os_str().is_empty() => Path::new("."),
+        Some(parent) => parent,
+        None => path,
+    }
+}
+
+fn context_paths_match(entry_path: &Path, current_path: &Path) -> bool {
+    if entry_path == current_path {
+        return true;
+    }
+
+    if let (Ok(entry), Ok(current)) = (entry_path.canonicalize(), current_path.canonicalize()) {
+        return entry == current;
+    }
+
+    entry_path.file_name().is_some() && entry_path.file_name() == current_path.file_name()
+}
+
 /// Size mode for background image loading.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum LoadSize {
@@ -1456,8 +1559,10 @@ fn should_probe_animation(path: &Path) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
     use std::path::PathBuf;
     use std::time::{Duration, Instant};
+    use tempfile::tempdir;
 
     fn make_app(count: usize) -> App {
         let images = (0..count)
@@ -1470,9 +1575,12 @@ mod tests {
         let (tx, _rx) = std::sync::mpsc::channel::<LoadRequest>();
         let (_tx2, rx2) = std::sync::mpsc::channel::<LoadResult>();
         App::new(
-            images,
-            AppState::Browser,
-            0,
+            AppStart {
+                images,
+                image_dir: PathBuf::from("."),
+                state: AppState::Browser,
+                selected: 0,
+            },
             tx,
             rx2,
             Lang::Zh,
@@ -1492,9 +1600,12 @@ mod tests {
         let (_tx2, rx2) = std::sync::mpsc::channel::<LoadResult>();
         (
             App::new(
-                images,
-                AppState::Browser,
-                0,
+                AppStart {
+                    images,
+                    image_dir: PathBuf::from("."),
+                    state: AppState::Browser,
+                    selected: 0,
+                },
                 tx,
                 rx2,
                 Lang::Zh,
@@ -1521,6 +1632,83 @@ mod tests {
             protocol: Some(make_protocol()),
             original: Arc::new(image::RgbaImage::new(width, height)),
         })
+    }
+
+    #[test]
+    fn browser_directory_context_lists_parent_and_highlights_image_dir() {
+        let dir = tempdir().unwrap();
+        let photos = dir.path().join("photos");
+        let sibling = dir.path().join("sibling");
+        fs::create_dir(&photos).unwrap();
+        fs::create_dir(&sibling).unwrap();
+        fs::write(dir.path().join("note.txt"), b"note").unwrap();
+
+        let mut app = make_app(0);
+        app.image_dir = photos;
+
+        let entries = app.directory_context_for_browser();
+        let names: Vec<_> = entries.iter().map(|entry| entry.name.as_str()).collect();
+
+        assert_eq!(names, vec!["photos", "sibling", "note.txt"]);
+        assert!(entries[0].is_current);
+        assert_eq!(entries[0].kind, DirectoryContextKind::Directory);
+        assert!(!entries[1].is_current);
+    }
+
+    #[test]
+    fn fullscreen_directory_context_lists_image_parent_and_highlights_file() {
+        let dir = tempdir().unwrap();
+        let photos = dir.path().join("photos");
+        fs::create_dir(&photos).unwrap();
+        fs::create_dir(photos.join("album")).unwrap();
+        fs::write(photos.join("b.png"), b"b").unwrap();
+        fs::write(photos.join("a.png"), b"a").unwrap();
+
+        let images = vec![ImageEntry {
+            path: photos.join("b.png"),
+            filename: "b.png".to_string(),
+            file_size: 1,
+        }];
+        let (tx, _rx) = std::sync::mpsc::channel::<LoadRequest>();
+        let (_tx2, rx2) = std::sync::mpsc::channel::<LoadResult>();
+        let app = App::new(
+            AppStart {
+                images,
+                image_dir: photos.clone(),
+                state: AppState::Browser,
+                selected: 0,
+            },
+            tx,
+            rx2,
+            Lang::Zh,
+            Picker::halfblocks(),
+        );
+
+        let entries = app.directory_context_for_fullscreen();
+        let names: Vec<_> = entries.iter().map(|entry| entry.name.as_str()).collect();
+
+        assert_eq!(names, vec!["album", "a.png", "b.png"]);
+        assert!(entries[2].is_current);
+        assert_eq!(entries[2].kind, DirectoryContextKind::File);
+    }
+
+    #[test]
+    fn directory_context_missing_directory_is_empty() {
+        let missing = PathBuf::from("/tmp/termfoto-missing-directory-context");
+
+        assert!(directory_context_entries(&missing, None).is_empty());
+    }
+
+    #[test]
+    fn browser_directory_context_handles_relative_single_component_dir() {
+        let mut app = make_app(0);
+        app.image_dir = PathBuf::from("src");
+
+        let entries = app.directory_context_for_browser();
+        let src = entries.iter().find(|entry| entry.name == "src").unwrap();
+
+        assert!(src.is_current);
+        assert_eq!(src.kind, DirectoryContextKind::Directory);
     }
 
     fn make_animation_frame(delay_ms: u64) -> AnimationFrame {
@@ -2078,9 +2266,12 @@ mod tests {
         let (tx, _rx) = std::sync::mpsc::channel::<LoadRequest>();
         let (_tx2, rx2) = std::sync::mpsc::channel::<LoadResult>();
         App::new(
-            images,
-            AppState::Browser,
-            0,
+            AppStart {
+                images,
+                image_dir: PathBuf::from("."),
+                state: AppState::Browser,
+                selected: 0,
+            },
             tx,
             rx2,
             Lang::Zh,

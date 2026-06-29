@@ -37,10 +37,11 @@ use crossterm::{
 use ratatui::{backend::CrosstermBackend, Terminal};
 use ratatui_image::picker::Picker;
 
-use app::{spawn_image_loader, App, AppState, LOGO_HEIGHT, MIN_CELL, MIN_LOGO_WIDTH};
+use app::{spawn_image_loader, App, AppStart, AppState, MIN_CELL};
 use lang::Lang;
 use scanner::scan_directory;
 use ui::browser::populate_protocol_cache;
+use ui::layout::gallery_inner_size;
 
 fn main() -> Result<()> {
     let arg1 = std::env::args().nth(1);
@@ -60,17 +61,19 @@ fn main() -> Result<()> {
 
     let path = arg1.map(PathBuf::from);
 
-    let (images, initial_state, selected) = match path {
+    let (images, image_dir, initial_state, selected) = match path {
         None => {
-            let images = scan_directory(&std::env::current_dir()?)?;
-            (images, AppState::Browser, 0_usize)
+            let image_dir = std::env::current_dir()?;
+            let images = scan_directory(&image_dir)?;
+            (images, image_dir, AppState::Browser, 0_usize)
         }
         Some(ref p) if p.is_dir() => {
             let images = scan_directory(p)?;
-            (images, AppState::Browser, 0_usize)
+            (images, p.clone(), AppState::Browser, 0_usize)
         }
         Some(ref p) if p.is_file() && scanner::is_supported_image(p) => {
             let parent = p.parent().unwrap_or_else(|| std::path::Path::new("."));
+            let image_dir = parent.to_path_buf();
             let images = scan_directory(parent)?;
             // Find the index of the specified file in the scanned list.
             // scan_directory normalises filenames so we compare by filename.
@@ -79,7 +82,7 @@ fn main() -> Result<()> {
                 .iter()
                 .position(|e| e.filename == target_name)
                 .unwrap_or(0);
-            (images, AppState::Fullscreen, selected)
+            (images, image_dir, AppState::Fullscreen, selected)
         }
         Some(ref p) => {
             eprintln!(
@@ -99,7 +102,7 @@ fn main() -> Result<()> {
     let backend = CrosstermBackend::new(io::stdout());
     let mut terminal = Terminal::new(backend)?;
 
-    run(&mut terminal, images, initial_state, selected)
+    run(&mut terminal, images, image_dir, initial_state, selected)
 }
 
 fn print_help() {
@@ -114,6 +117,7 @@ fn print_help() {
 fn run(
     terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
     images: Vec<scanner::ImageEntry>,
+    image_dir: PathBuf,
     initial_state: AppState,
     selected: usize,
 ) -> Result<()> {
@@ -124,9 +128,12 @@ fn run(
     let (load_tx, load_rx) = spawn_image_loader(picker.clone(), paths);
 
     let mut app = App::new(
-        images,
-        initial_state,
-        selected,
+        AppStart {
+            images,
+            image_dir,
+            state: initial_state,
+            selected,
+        },
         load_tx,
         load_rx,
         Lang::detect(),
@@ -136,15 +143,16 @@ fn run(
     loop {
         let size = terminal.size()?;
         // Dynamic grid: visually square cells (终端字符 ≈ 1:2 宽高比)
-        let logo_h = if size.width >= MIN_LOGO_WIDTH {
-            LOGO_HEIGHT
-        } else {
-            0
-        };
-        let avail_h = size.height.saturating_sub(logo_h + 1); // +1 status bar
+        let gallery_size = gallery_inner_size(size);
+        let avail_h = gallery_size.height.max(1);
+        let avail_w = gallery_size.width.max(1);
         let char_ratio = picker.font_size().height as f32 / picker.font_size().width as f32;
-        let cols = (size.width / MIN_CELL).max(2) as usize;
-        let cell_w = size.width / cols as u16;
+        let cols = if avail_w >= MIN_CELL * 2 {
+            (avail_w / MIN_CELL) as usize
+        } else {
+            1
+        };
+        let cell_w = (avail_w / cols as u16).max(1);
         // Visual square: cell_h ≈ cell_w / char_ratio
         let cell_h = ((cell_w as f32 / char_ratio) as u16).max(1);
         let rows = (avail_h / cell_h).max(1) as usize;

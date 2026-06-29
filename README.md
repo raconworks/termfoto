@@ -19,6 +19,7 @@
 | 🎨 **High-quality chafa rendering** | Unicode chars + true color half-blocks — a magnitude sharper than sixel |
 | ⚡ **Non-blocking async loading** | Thumbnail loading, original decoding, and fullscreen rendering stay off the main thread |
 | 🖼 **Fullscreen zoom & pan** | Fit-to-window display with fast interactive zoom, pan, and final high-quality redraw |
+| 🧭 **Three-panel workspace** | Context, Gallery, and Info panels stay visible above a three-line prompt bar |
 | ⌨ **Keyboard-only navigation** | Vim-style bindings — keep your hands where they matter |
 | 🪶 **Extremely lightweight** | No GUI framework — a small Rust-native dependency set |
 | 📂 **Instant startup** | No indexing, no recursive scanning, no metadata cache — open and browse |
@@ -93,6 +94,14 @@ termfoto photo.jpg       # open a single image (fullscreen mode)
 termfoto --help          # show all options
 termfoto --version       # print version
 ```
+
+## 🧩 Interface
+
+termfoto uses the same layout in browser and fullscreen modes: a read-only **Context** panel on the left, the **Gallery** in the center, and file **Info** on the right. The bottom three rows are reserved for mode-specific prompts or search input, with the logo fixed on the right.
+
+In browser mode, Context shows the parent of the image collection folder and highlights that folder. In fullscreen mode, Context shows the current image's folder and highlights the current file.
+
+The Info panel lists filename, dimensions when available, size, type, modified/created time, and path.
 
 ## ⌨ Keybindings
 

@@ -1,12 +1,16 @@
-use crate::app::{App, LoadSize, LOGO_HEIGHT, MIN_LOGO_WIDTH};
-use crate::ui::render_logo;
+use crate::app::{App, LoadSize};
+use crate::ui::layout::three_panel_areas;
 use crate::ui::search::SearchBar;
+use crate::ui::{
+    render_directory_context, render_info_panel, render_panel, render_prompt_base,
+    render_prompt_lines,
+};
 use ratatui::{
     buffer::Buffer,
-    layout::{Alignment, Rect},
+    layout::Rect,
     style::{Color, Style},
     text::Span,
-    widgets::{Block, Borders, Paragraph, Widget},
+    widgets::{Block, Borders, Widget},
 };
 use ratatui_image::{protocol::Protocol, Image};
 
@@ -37,14 +41,32 @@ impl<'a> Widget for BrowserView<'a> {
         let cell_w = self.cell_w.max(1);
         let cell_h = self.cell_h.max(1);
 
-        let show_logo = area.width >= MIN_LOGO_WIDTH;
-        let bottom_h = if show_logo { LOGO_HEIGHT } else { 1 };
-        let available = area.height.saturating_sub(bottom_h);
+        let areas = three_panel_areas(area);
+        let context_inner = render_panel(areas.context, self.app.lang.title_context(), buf);
+        let gallery_inner = render_panel(areas.gallery, self.app.lang.title_gallery(), buf);
+        let info_inner = render_panel(areas.info, self.app.lang.title_info(), buf);
+
+        let context_entries = self.app.directory_context_for_browser();
+        render_directory_context(
+            context_inner,
+            &context_entries,
+            self.app.lang.empty_context(),
+            buf,
+        );
+        render_info_panel(
+            info_inner,
+            self.app.images.get(self.app.selected),
+            None,
+            self.app,
+            buf,
+        );
+
+        let available = gallery_inner.height;
 
         // Grid centered both horizontally and vertically
-        let visible_rows = (available / cell_h) as usize;
+        let visible_rows = (available / cell_h).max(1) as usize;
         let grid_h = (visible_rows as u16) * cell_h;
-        let grid_top = area.y + (available.saturating_sub(grid_h)) / 2;
+        let grid_top = gallery_inner.y + (available.saturating_sub(grid_h)) / 2;
 
         self.app.clamp_scroll(visible_rows);
 
@@ -53,7 +75,7 @@ impl<'a> Widget for BrowserView<'a> {
 
         // Center the grid horizontally
         let grid_w = self.app.grid_cols as u16 * cell_w;
-        let grid_x = area.x + (area.width.saturating_sub(grid_w)) / 2;
+        let grid_x = gallery_inner.x + (gallery_inner.width.saturating_sub(grid_w)) / 2;
 
         let search_matches: Option<&[usize]> =
             self.app.search.as_ref().map(|s| s.matches.as_slice());
@@ -72,7 +94,9 @@ impl<'a> Widget for BrowserView<'a> {
                 height: cell_h,
             };
 
-            if x + cell_w > area.x + area.width || y + cell_h > area.y + area.height {
+            if x + cell_w > gallery_inner.x + gallery_inner.width
+                || y + cell_h > gallery_inner.y + gallery_inner.height
+            {
                 continue;
             }
 
@@ -90,28 +114,13 @@ impl<'a> Widget for BrowserView<'a> {
             render_browser_cell(cell_area, buf, &cell_meta, &self.app.protocol_cache);
         }
 
-        // Logo: bottom-right 6 rows, status bar shares the last row
-        if show_logo {
-            let logo_area = Rect {
-                y: area.y + area.height.saturating_sub(LOGO_HEIGHT),
-                height: LOGO_HEIGHT,
-                ..area
-            };
-            render_logo(logo_area, buf);
-        }
-
-        // Status bar: bottom row, left-aligned (logo already rendered on right)
-        let status_area = Rect {
-            y: area.y + area.height.saturating_sub(1),
-            height: 1,
-            ..area
-        };
         if let Some(ref search) = self.app.search {
+            render_prompt_base(areas.prompt, buf);
             SearchBar {
                 state: search,
                 lang: self.app.lang,
             }
-            .render(status_area, buf);
+            .render(areas.prompt, buf);
         } else {
             let selected_name = self
                 .app
@@ -119,7 +128,7 @@ impl<'a> Widget for BrowserView<'a> {
                 .get(self.app.selected)
                 .map(|e| e.filename.as_str())
                 .unwrap_or("");
-            let info = self.app.lang.browser_status(
+            let lines = self.app.lang.browser_prompt_lines(
                 selected_name,
                 self.app
                     .selected
@@ -127,10 +136,7 @@ impl<'a> Widget for BrowserView<'a> {
                     .min(self.app.images.len()),
                 self.app.images.len(),
             );
-            let span = Span::styled(info, Style::default().fg(Color::White).bg(Color::DarkGray));
-            Paragraph::new(span)
-                .alignment(Alignment::Left)
-                .render(status_area, buf);
+            render_prompt_lines(areas.prompt, &lines, buf);
         }
     }
 }
@@ -345,6 +351,50 @@ fn thumbnail_request_order(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::app::{AppStart, AppState, LoadRequest, LoadResult};
+    use crate::lang::Lang;
+    use crate::scanner::ImageEntry;
+    use ratatui_image::picker::Picker;
+    use std::fs;
+    use tempfile::{tempdir, TempDir};
+
+    fn buffer_text(buf: &Buffer) -> String {
+        buf.content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<String>()
+    }
+
+    fn render_test_app() -> (TempDir, App) {
+        let dir = tempdir().unwrap();
+        let photos = dir.path().join("photos");
+        fs::create_dir(&photos).unwrap();
+        let image_path = photos.join("sample.png");
+        fs::write(&image_path, b"sample").unwrap();
+
+        let images = vec![ImageEntry {
+            path: image_path,
+            filename: "sample.png".to_string(),
+            file_size: 6,
+        }];
+        let (tx, _rx) = std::sync::mpsc::channel::<LoadRequest>();
+        let (_tx2, rx2) = std::sync::mpsc::channel::<LoadResult>();
+        (
+            dir,
+            App::new(
+                AppStart {
+                    images,
+                    image_dir: photos,
+                    state: AppState::Browser,
+                    selected: 0,
+                },
+                tx,
+                rx2,
+                Lang::En,
+                Picker::halfblocks(),
+            ),
+        )
+    }
 
     #[test]
     fn thumbnail_request_order_prioritizes_visible_slots() {
@@ -366,5 +416,32 @@ mod tests {
             thumbnail_request_order(16, 24, 8, 20),
             vec![16, 17, 18, 19, 8, 9, 10, 11, 12, 13, 14, 15]
         );
+    }
+
+    #[test]
+    fn browser_render_includes_three_panel_titles_and_prompt_row() {
+        let (_dir, mut app) = render_test_app();
+        app.grid_cols = 2;
+        app.visible_rows = 1;
+        let area = Rect::new(0, 0, 100, 20);
+        let mut buf = Buffer::empty(area);
+
+        BrowserView {
+            app: &mut app,
+            cell_w: 24,
+            cell_h: 8,
+        }
+        .render(area, &mut buf);
+
+        let text = buffer_text(&buf);
+        assert!(text.contains("Context"));
+        assert!(text.contains("Gallery"));
+        assert!(text.contains("Info"));
+
+        let prompt_text_row = area.height - 3;
+        let prompt_row: String = (0..area.width)
+            .map(|x| buf.cell((x, prompt_text_row)).unwrap().symbol())
+            .collect();
+        assert!(prompt_row.contains("sample.png"));
     }
 }

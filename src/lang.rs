@@ -23,67 +23,105 @@ impl Lang {
         };
     }
 
-    /// Browser status bar: filename, index, total, key hints
-    pub fn browser_status(&self, name: &str, selected: usize, total: usize) -> String {
+    pub fn title_context(&self) -> &'static str {
         match self {
-            Lang::Zh => format!(
-                " {} [{}/{}]  ←→↑↓ 导航  PgUp/PgDown/Space翻页  Home/End首尾  Enter全屏  /搜索  L切换语言  q退出",
-                name, selected, total
-            ),
-            Lang::En => format!(
-                " {} [{}/{}]  ←→↑↓ Nav  PgUp/PgDown/Space Page  Home/End  Enter view  /search  L lang  q quit",
-                name, selected, total
-            ),
+            Lang::Zh => "上级目录",
+            Lang::En => "Context",
         }
     }
 
-    /// Search bar hint when there are matches
-    pub fn search_hint_matches(&self, current: usize, total: usize) -> String {
+    pub fn title_gallery(&self) -> &'static str {
         match self {
-            Lang::Zh => format!(
-                " [{}/{} matches]  Tab/Shift+Tab切换  Enter全屏  Esc取消",
-                current, total
-            ),
-            Lang::En => format!(
-                " [{}/{} matches]  Tab/Shift+Tab cycle  Enter view  Esc cancel",
-                current, total
-            ),
+            Lang::Zh => "图片浏览",
+            Lang::En => "Gallery",
         }
     }
 
-    /// Search bar hint when query is empty
-    pub fn search_hint_empty(&self) -> &'static str {
+    pub fn title_info(&self) -> &'static str {
         match self {
-            Lang::Zh => " Tab/Shift+Tab切换  Enter全屏  Esc取消",
-            Lang::En => " Tab/Shift+Tab cycle  Enter view  Esc cancel",
+            Lang::Zh => "文件信息",
+            Lang::En => "Info",
         }
     }
 
-    /// Search bar hint when no matches found
-    pub fn search_hint_none(&self) -> &'static str {
+    pub fn empty_context(&self) -> &'static str {
         match self {
-            Lang::Zh => " [0/0]  Tab/Shift+Tab切换  Enter全屏  Esc取消",
-            Lang::En => " [0/0]  Tab/Shift+Tab cycle  Enter view  Esc cancel",
+            Lang::Zh => "无法读取目录",
+            Lang::En => "Directory unavailable",
         }
     }
 
-    /// Fullscreen status bar: filename, index, total, loading suffix
-    pub fn preview_status(
+    pub fn browser_prompt_lines(&self, name: &str, selected: usize, total: usize) -> Vec<String> {
+        match self {
+            Lang::Zh => vec![
+                format!(" 文件     {} [{}/{}]", name, selected, total),
+                " 导航     ←→↑↓ 导航   PgUp/PgDown/Space 翻页   Home/End 首尾".to_string(),
+                " 操作     Enter 全屏   / 搜索   L 切换语言   q 退出".to_string(),
+            ],
+            Lang::En => vec![
+                format!(" File     {} [{}/{}]", name, selected, total),
+                " Move     ←→↑↓ Nav   PgUp/PgDown/Space Page   Home/End First/Last".to_string(),
+                " Action   Enter View   / Search   L Language   q Quit".to_string(),
+            ],
+        }
+    }
+
+    pub fn search_prompt_lines(
+        &self,
+        current: usize,
+        total: usize,
+        has_query: bool,
+    ) -> Vec<String> {
+        match self {
+            Lang::Zh => {
+                let matches = if total > 0 {
+                    format!(" 匹配: {}/{}", current, total)
+                } else if has_query {
+                    " 匹配: 0/0".to_string()
+                } else {
+                    " 输入文件名进行搜索".to_string()
+                };
+                vec![
+                    String::new(),
+                    format!(" 状态     {}", matches.trim_start()),
+                    " 操作     Tab/Shift+Tab 切换   Enter 全屏   Esc 取消".to_string(),
+                ]
+            }
+            Lang::En => {
+                let matches = if total > 0 {
+                    format!(" Matches: {}/{}", current, total)
+                } else if has_query {
+                    " Matches: 0/0".to_string()
+                } else {
+                    " Type to search filenames".to_string()
+                };
+                vec![
+                    String::new(),
+                    format!(" Status   {}", matches.trim_start()),
+                    " Action   Tab/Shift+Tab Cycle   Enter View   Esc Cancel".to_string(),
+                ]
+            }
+        }
+    }
+
+    pub fn fullscreen_prompt_lines(
         &self,
         name: &str,
         selected: usize,
         total: usize,
         status: &str,
-    ) -> String {
+    ) -> Vec<String> {
         match self {
-            Lang::Zh => format!(
-                " {} [{}/{}]  +/-缩放 hjkl平移 0重置  ← → 切换  Enter/Esc/q 返回  L语言{}",
-                name, selected, total, status
-            ),
-            Lang::En => format!(
-                " {} [{}/{}]  +/- zoom hjkl pan 0 reset  ← → prev/next  Enter/Esc/q back  L lang{}",
-                name, selected, total, status
-            ),
+            Lang::Zh => vec![
+                format!(" 文件     {} [{}/{}]{}", name, selected, total, status),
+                " 视图     +/- 缩放   0 重置   hjkl 平移".to_string(),
+                " 操作     ← → 切换图片   Enter/Esc/q 返回   L 语言".to_string(),
+            ],
+            Lang::En => vec![
+                format!(" File     {} [{}/{}]{}", name, selected, total, status),
+                " View     +/- Zoom   0 Reset   hjkl Pan".to_string(),
+                " Action   ← → Prev/Next   Enter/Esc/q Back   L Language".to_string(),
+            ],
         }
     }
 
@@ -126,6 +164,18 @@ impl Lang {
             Lang::En => "Path",
         }
     }
+    pub fn label_modified(&self) -> &'static str {
+        match self {
+            Lang::Zh => "修改时间",
+            Lang::En => "Modified",
+        }
+    }
+    pub fn label_created(&self) -> &'static str {
+        match self {
+            Lang::Zh => "创建时间",
+            Lang::En => "Created",
+        }
+    }
 }
 
 #[cfg(test)]
@@ -157,35 +207,41 @@ mod tests {
     #[test]
     fn test_all_methods_return_non_empty() {
         for lang in [Lang::Zh, Lang::En] {
-            assert!(!lang.browser_status("test.png", 1, 10).is_empty());
-            assert!(!lang.search_hint_matches(1, 5).is_empty());
-            assert!(!lang.search_hint_empty().is_empty());
-            assert!(!lang.search_hint_none().is_empty());
-            assert!(!lang.preview_status("test.png", 1, 10, "").is_empty());
+            assert!(!lang.title_context().is_empty());
+            assert!(!lang.title_gallery().is_empty());
+            assert!(!lang.title_info().is_empty());
+            assert!(!lang.empty_context().is_empty());
+            assert_eq!(lang.browser_prompt_lines("test.png", 1, 10).len(), 3);
+            assert_eq!(lang.search_prompt_lines(1, 5, true).len(), 3);
+            assert_eq!(lang.fullscreen_prompt_lines("test.png", 1, 10, "").len(), 3);
             assert!(!lang.loading_text().is_empty());
             assert!(!lang.label_file().is_empty());
             assert!(!lang.label_dims().is_empty());
             assert!(!lang.label_size().is_empty());
             assert!(!lang.label_type().is_empty());
             assert!(!lang.label_path().is_empty());
+            assert!(!lang.label_modified().is_empty());
+            assert!(!lang.label_created().is_empty());
         }
     }
 
     #[test]
     fn test_zh_en_strings_differ() {
+        assert_ne!(Lang::Zh.title_context(), Lang::En.title_context());
+        assert_ne!(Lang::Zh.title_gallery(), Lang::En.title_gallery());
+        assert_ne!(Lang::Zh.title_info(), Lang::En.title_info());
+        assert_ne!(Lang::Zh.empty_context(), Lang::En.empty_context());
         assert_ne!(
-            Lang::Zh.browser_status("a", 1, 5),
-            Lang::En.browser_status("a", 1, 5)
+            Lang::Zh.browser_prompt_lines("a", 1, 5),
+            Lang::En.browser_prompt_lines("a", 1, 5)
         );
         assert_ne!(
-            Lang::Zh.search_hint_matches(1, 5),
-            Lang::En.search_hint_matches(1, 5)
+            Lang::Zh.search_prompt_lines(1, 5, true),
+            Lang::En.search_prompt_lines(1, 5, true)
         );
-        assert_ne!(Lang::Zh.search_hint_empty(), Lang::En.search_hint_empty());
-        assert_ne!(Lang::Zh.search_hint_none(), Lang::En.search_hint_none());
         assert_ne!(
-            Lang::Zh.preview_status("a", 1, 5, ""),
-            Lang::En.preview_status("a", 1, 5, "")
+            Lang::Zh.fullscreen_prompt_lines("a", 1, 5, ""),
+            Lang::En.fullscreen_prompt_lines("a", 1, 5, "")
         );
         assert_ne!(Lang::Zh.loading_text(), Lang::En.loading_text());
         assert_ne!(Lang::Zh.label_file(), Lang::En.label_file());
@@ -193,5 +249,7 @@ mod tests {
         assert_ne!(Lang::Zh.label_size(), Lang::En.label_size());
         assert_ne!(Lang::Zh.label_type(), Lang::En.label_type());
         assert_ne!(Lang::Zh.label_path(), Lang::En.label_path());
+        assert_ne!(Lang::Zh.label_modified(), Lang::En.label_modified());
+        assert_ne!(Lang::Zh.label_created(), Lang::En.label_created());
     }
 }

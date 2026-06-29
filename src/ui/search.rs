@@ -141,7 +141,7 @@ use ratatui::{
     buffer::Buffer,
     layout::{Alignment, Rect},
     style::{Color, Style},
-    text::Span,
+    text::{Line, Span},
     widgets::{Paragraph, Widget},
 };
 
@@ -168,14 +168,6 @@ impl<'a> Widget for SearchBar<'a> {
         let cursor = "█";
         let display_query = format!("{}{}{}", prompt, query, cursor);
 
-        let hint = if total_matches > 0 {
-            self.lang.search_hint_matches(current, total_matches)
-        } else if query.is_empty() {
-            self.lang.search_hint_empty().to_string()
-        } else {
-            self.lang.search_hint_none().to_string()
-        };
-
         let query_style = if total_matches == 0 && !query.is_empty() {
             Style::default().fg(Color::Red).bg(Color::DarkGray)
         } else {
@@ -184,12 +176,21 @@ impl<'a> Widget for SearchBar<'a> {
 
         let hint_style = Style::default().fg(Color::Gray).bg(Color::DarkGray);
 
-        let spans = vec![
+        let prompt_lines = self
+            .lang
+            .search_prompt_lines(current, total_matches, !query.is_empty());
+        let mut lines = vec![Line::from(vec![
+            Span::styled(" Search   ", hint_style),
             Span::styled(display_query, query_style),
-            Span::styled(hint, hint_style),
-        ];
+        ])];
+        lines.extend(
+            prompt_lines
+                .into_iter()
+                .skip(1)
+                .map(|line| Line::from(Span::styled(line, hint_style))),
+        );
 
-        Paragraph::new(ratatui::text::Line::from(spans))
+        Paragraph::new(lines)
             .alignment(Alignment::Left)
             .render(area, buf);
     }
@@ -215,10 +216,13 @@ mod tests {
 
     fn cell_text(buf: &Buffer, area: Rect) -> String {
         let mut s = String::new();
-        for x in area.x..area.x + area.width {
-            if let Some(cell) = buf.cell((x, area.y)) {
-                s.push_str(&cell.symbol());
+        for y in area.y..area.y + area.height {
+            for x in area.x..area.x + area.width {
+                if let Some(cell) = buf.cell((x, y)) {
+                    s.push_str(cell.symbol());
+                }
             }
+            s.push('\n');
         }
         s.trim_end().to_string()
     }
@@ -234,14 +238,14 @@ mod tests {
             x: 0,
             y: 0,
             width: 80,
-            height: 1,
+            height: 3,
         };
         let mut buf = Buffer::empty(area);
         bar.render(area, &mut buf);
         let content = cell_text(&buf, area);
         assert!(
-            content.starts_with('/'),
-            "expected leading '/', got: {content:?}"
+            content.contains('/'),
+            "expected search trigger '/', got: {content:?}"
         );
         assert!(
             content.contains("Esc"),

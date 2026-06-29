@@ -1,74 +1,27 @@
-use crate::app::{App, LOGO_HEIGHT, MIN_LOGO_WIDTH};
-use crate::ui::render_logo;
-use ratatui::{
-    buffer::Buffer,
-    layout::{Alignment, Rect},
-    style::{Color, Style},
-    text::{Line, Span},
-    widgets::{Paragraph, Widget},
-};
+use crate::app::App;
+use crate::ui::layout::three_panel_areas;
+use crate::ui::{render_directory_context, render_info_panel, render_panel, render_prompt_lines};
+use ratatui::{buffer::Buffer, layout::Rect, widgets::Widget};
 use ratatui_image::Image;
 
 pub struct PreviewView<'a> {
     pub app: &'a mut App,
 }
 
-struct PreviewAreas {
-    main: Rect,
-    logo: Rect,
-    status: Rect,
-}
-
-fn preview_areas(area: Rect, show_logo: bool) -> PreviewAreas {
-    let bottom_h = if show_logo { LOGO_HEIGHT } else { 1 };
-    let main_h = area.height.saturating_sub(bottom_h);
-    let main = Rect {
-        height: main_h,
-        ..area
-    };
-    let logo = Rect {
-        y: area.y + area.height.saturating_sub(LOGO_HEIGHT),
-        height: if show_logo { LOGO_HEIGHT } else { 0 },
-        ..area
-    };
-    let status = Rect {
-        y: area.y + area.height.saturating_sub(1),
-        height: 1,
-        ..area
-    };
-
-    PreviewAreas { main, logo, status }
-}
-
-/// Format file size for display.
-fn format_size(bytes: u64) -> String {
-    if bytes < 1024 {
-        format!("{} B", bytes)
-    } else if bytes < 1024 * 1024 {
-        format!("{:.1} KB", bytes as f64 / 1024.0)
-    } else {
-        format!("{:.1} MB", bytes as f64 / (1024.0 * 1024.0))
-    }
-}
-
 impl<'a> Widget for PreviewView<'a> {
     fn render(self, area: Rect, buf: &mut Buffer) {
-        let show_logo = area.width >= MIN_LOGO_WIDTH;
-        let areas = preview_areas(area, show_logo);
-        let main_area = areas.main;
+        let areas = three_panel_areas(area);
+        let context_inner = render_panel(areas.context, self.app.lang.title_context(), buf);
+        let image_area = render_panel(areas.gallery, self.app.lang.title_gallery(), buf);
+        let info_inner = render_panel(areas.info, self.app.lang.title_info(), buf);
 
-        // 3:1 split: image (left 75%) + info panel (right 25%)
-        let info_w = (main_area.width / 4).max(20);
-        let image_w = main_area.width.saturating_sub(info_w);
-        let image_area = Rect {
-            width: image_w,
-            ..main_area
-        };
-        let info_area = Rect {
-            x: main_area.x + image_w,
-            width: info_w,
-            ..main_area
-        };
+        let context_entries = self.app.directory_context_for_fullscreen();
+        render_directory_context(
+            context_inner,
+            &context_entries,
+            self.app.lang.empty_context(),
+            buf,
+        );
 
         // Record viewport size for zoom calculations.
         self.app
@@ -96,57 +49,13 @@ impl<'a> Widget for PreviewView<'a> {
             Image::new(proto).render(render_area, buf);
         }
 
-        // --- Info panel ---
-        if let Some(entry) = self.app.images.get(self.app.selected) {
-            let lang = &self.app.lang;
-            let ext = entry
-                .path
-                .extension()
-                .and_then(|e| e.to_str())
-                .unwrap_or("?")
-                .to_uppercase();
-
-            let mut lines: Vec<String> = Vec::new();
-
-            // File name
-            lines.push(format!("{}: {}", lang.label_file(), entry.filename));
-            // Dimensions
-            if let Some((w, h)) = self.app.fullscreen_dims {
-                lines.push(format!("{}: {}×{}", lang.label_dims(), w, h));
-            }
-            // File size
-            lines.push(format!(
-                "{}: {}",
-                lang.label_size(),
-                format_size(entry.file_size)
-            ));
-            // Type
-            lines.push(format!("{}: {}", lang.label_type(), ext));
-            // Path
-            let path_str = entry.path.to_string_lossy();
-            let display_path = if path_str.len() > info_w as usize - lang.label_path().len() - 2 {
-                format!(
-                    "...{}",
-                    &path_str[path_str.len().saturating_sub(info_w as usize - 6)..]
-                )
-            } else {
-                path_str.into_owned()
-            };
-            lines.push(format!("{}: {}", lang.label_path(), display_path));
-
-            let text_lines: Vec<Line> = lines
-                .iter()
-                .map(|l| Line::from(Span::styled(l.clone(), Style::default().fg(Color::White))))
-                .collect();
-            Paragraph::new(text_lines)
-                .alignment(Alignment::Left)
-                .render(info_area, buf);
-        }
-
-        // --- Logo ---
-        if show_logo {
-            render_logo(areas.logo, buf);
-        }
+        render_info_panel(
+            info_inner,
+            self.app.images.get(self.app.selected),
+            self.app.fullscreen_dims,
+            self.app,
+            buf,
+        );
 
         // --- Status bar ---
         if let Some(entry) = self.app.images.get(self.app.selected) {
@@ -157,16 +66,13 @@ impl<'a> Widget for PreviewView<'a> {
             } else {
                 String::new()
             };
-            let info = self.app.lang.preview_status(
+            let lines = self.app.lang.fullscreen_prompt_lines(
                 &entry.filename,
                 self.app.selected + 1,
                 self.app.images.len(),
                 &status,
             );
-            let span = Span::styled(info, Style::default().fg(Color::White).bg(Color::DarkGray));
-            Paragraph::new(span)
-                .alignment(Alignment::Left)
-                .render(areas.status, buf);
+            render_prompt_lines(areas.prompt, &lines, buf);
         }
     }
 }
@@ -174,9 +80,53 @@ impl<'a> Widget for PreviewView<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::app::{AppStart, AppState, LoadRequest, LoadResult};
+    use crate::lang::Lang;
+    use crate::scanner::ImageEntry;
+    use ratatui_image::picker::Picker;
+    use std::fs;
+    use tempfile::{tempdir, TempDir};
+
+    fn render_test_app() -> (TempDir, App) {
+        let dir = tempdir().unwrap();
+        let photos = dir.path().join("photos");
+        fs::create_dir(&photos).unwrap();
+        let image_path = photos.join("sample.png");
+        fs::write(&image_path, b"sample").unwrap();
+
+        let images = vec![ImageEntry {
+            path: image_path,
+            filename: "sample.png".to_string(),
+            file_size: 6,
+        }];
+        let (tx, _rx) = std::sync::mpsc::channel::<LoadRequest>();
+        let (_tx2, rx2) = std::sync::mpsc::channel::<LoadResult>();
+        (
+            dir,
+            App::new(
+                AppStart {
+                    images,
+                    image_dir: photos,
+                    state: AppState::Fullscreen,
+                    selected: 0,
+                },
+                tx,
+                rx2,
+                Lang::En,
+                Picker::halfblocks(),
+            ),
+        )
+    }
+
+    fn buffer_text(buf: &Buffer) -> String {
+        buf.content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<String>()
+    }
 
     #[test]
-    fn preview_status_bar_shares_last_logo_row() {
+    fn preview_prompt_uses_bottom_three_rows() {
         let area = Rect {
             x: 0,
             y: 0,
@@ -184,12 +134,25 @@ mod tests {
             height: 30,
         };
 
-        let areas = preview_areas(area, true);
+        let areas = three_panel_areas(area);
 
-        assert_eq!(areas.main.height, 30 - LOGO_HEIGHT);
-        assert_eq!(areas.logo.y, 30 - LOGO_HEIGHT);
-        assert_eq!(areas.logo.height, LOGO_HEIGHT);
-        assert_eq!(areas.status.y, 29);
-        assert_eq!(areas.status.height, 1);
+        assert_eq!(areas.gallery.height, 27);
+        assert_eq!(areas.prompt.y, 27);
+        assert_eq!(areas.prompt.height, 3);
+    }
+
+    #[test]
+    fn preview_render_includes_three_panel_titles_and_context_file() {
+        let (_dir, mut app) = render_test_app();
+        let area = Rect::new(0, 0, 100, 20);
+        let mut buf = Buffer::empty(area);
+
+        PreviewView { app: &mut app }.render(area, &mut buf);
+
+        let text = buffer_text(&buf);
+        assert!(text.contains("Context"));
+        assert!(text.contains("Gallery"));
+        assert!(text.contains("Info"));
+        assert!(text.contains("> sample.png"));
     }
 }
