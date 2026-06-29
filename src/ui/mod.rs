@@ -3,7 +3,7 @@ pub mod layout;
 pub mod preview;
 pub mod search;
 
-use crate::app::{App, AppState, DirectoryContextEntry, DirectoryContextKind, LOGO_HEIGHT};
+use crate::app::{App, AppState, DirectoryContextEntry, LOGO_HEIGHT};
 use crate::scanner::ImageEntry;
 use crate::ui::browser::BrowserView;
 use crate::ui::preview::PreviewView;
@@ -72,11 +72,16 @@ pub fn draw(frame: &mut Frame, app: &mut App, cell_w: u16, cell_h: u16) {
     }
 }
 
-pub fn render_panel(area: Rect, title: &str, buf: &mut Buffer) -> Rect {
+pub fn render_panel(area: Rect, title: &str, focused: bool, buf: &mut Buffer) -> Rect {
+    let border_style = if focused {
+        Style::default().fg(Color::Cyan)
+    } else {
+        Style::default().fg(Color::DarkGray)
+    };
     let block = Block::default()
         .title(title)
         .borders(Borders::ALL)
-        .border_style(Style::default().fg(Color::DarkGray));
+        .border_style(border_style);
     let inner = block.inner(area);
     block.render(area, buf);
     inner
@@ -86,6 +91,8 @@ pub fn render_directory_context(
     area: Rect,
     entries: &[DirectoryContextEntry],
     empty_text: &str,
+    selected: Option<usize>,
+    scroll: usize,
     buf: &mut Buffer,
 ) {
     if area.width == 0 || area.height == 0 {
@@ -103,21 +110,25 @@ pub fn render_directory_context(
 
     let lines: Vec<Line> = entries
         .iter()
+        .enumerate()
+        .skip(scroll)
         .take(area.height as usize)
-        .map(|entry| {
-            let suffix = match entry.kind {
-                DirectoryContextKind::Directory => "/",
-                DirectoryContextKind::File => "",
-            };
-            let marker = if entry.is_current { "> " } else { "  " };
-            let text =
-                truncate_to_width(&format!("{}{}{}", marker, entry.name, suffix), area.width);
-            let style = if entry.is_current {
-                Style::default().fg(Color::Cyan)
-            } else if entry.kind == DirectoryContextKind::Directory {
-                Style::default().fg(Color::White)
+        .map(|(idx, entry)| {
+            let is_selected = selected == Some(idx);
+            let marker = if is_selected || entry.is_current {
+                "> "
             } else {
-                Style::default().fg(Color::Gray)
+                "  "
+            };
+            let indent = "    ".repeat(entry.depth);
+            let text =
+                truncate_to_width(&format!("{}{}{}/", indent, marker, entry.name), area.width);
+            let style = if is_selected {
+                Style::default().fg(Color::Black).bg(Color::Cyan)
+            } else if entry.is_current {
+                Style::default().fg(Color::Cyan)
+            } else {
+                Style::default().fg(Color::White)
             };
             Line::from(Span::styled(text, style))
         })
@@ -298,7 +309,6 @@ mod tests {
         assert_eq!(LOGO_COLORS.len(), LOGO_HEIGHT as usize);
     }
 
-    #[test]
     #[test]
     fn panels_leave_prompt_on_bottom_three_rows() {
         let areas = crate::ui::layout::three_panel_areas(Rect::new(0, 0, 100, 30));

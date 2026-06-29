@@ -11,15 +11,17 @@ pub struct PreviewView<'a> {
 impl<'a> Widget for PreviewView<'a> {
     fn render(self, area: Rect, buf: &mut Buffer) {
         let areas = three_panel_areas(area);
-        let context_inner = render_panel(areas.context, self.app.lang.title_context(), buf);
-        let image_area = render_panel(areas.gallery, self.app.lang.title_gallery(), buf);
-        let info_inner = render_panel(areas.info, self.app.lang.title_info(), buf);
+        let context_inner = render_panel(areas.context, self.app.lang.title_context(), false, buf);
+        let image_area = render_panel(areas.gallery, self.app.lang.title_gallery(), false, buf);
+        let info_inner = render_panel(areas.info, self.app.lang.title_info(), false, buf);
 
-        let context_entries = self.app.directory_context_for_fullscreen();
+        let context_entries = self.app.directory_context_for_browser();
         render_directory_context(
             context_inner,
             &context_entries,
-            self.app.lang.empty_context(),
+            self.app.lang.empty_folder_context(),
+            None,
+            0,
             buf,
         );
 
@@ -142,7 +144,7 @@ mod tests {
     }
 
     #[test]
-    fn preview_render_includes_three_panel_titles_and_context_file() {
+    fn preview_render_includes_three_panel_titles_and_browser_context() {
         let (_dir, mut app) = render_test_app();
         let area = Rect::new(0, 0, 100, 20);
         let mut buf = Buffer::empty(area);
@@ -153,6 +155,6 @@ mod tests {
         assert!(text.contains("Context"));
         assert!(text.contains("Gallery"));
         assert!(text.contains("Info"));
-        assert!(text.contains("> sample.png"));
+        assert!(text.contains("> photos/"));
     }
 }

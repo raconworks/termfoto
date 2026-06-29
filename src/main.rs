@@ -93,11 +93,6 @@ fn main() -> Result<()> {
         }
     };
 
-    if images.is_empty() && matches!(initial_state, AppState::Browser) {
-        eprintln!("termfoto: no images found in the specified directory");
-        std::process::exit(0);
-    }
-
     let _term = TermGuard::enter()?;
     let backend = CrosstermBackend::new(io::stdout());
     let mut terminal = Terminal::new(backend)?;

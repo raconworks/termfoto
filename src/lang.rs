@@ -44,10 +44,10 @@ impl Lang {
         }
     }
 
-    pub fn empty_context(&self) -> &'static str {
+    pub fn empty_folder_context(&self) -> &'static str {
         match self {
-            Lang::Zh => "无法读取目录",
-            Lang::En => "Directory unavailable",
+            Lang::Zh => "没有子文件夹",
+            Lang::En => "No folders",
         }
     }
 
@@ -56,13 +56,42 @@ impl Lang {
             Lang::Zh => vec![
                 format!(" 文件     {} [{}/{}]", name, selected, total),
                 " 导航     ←→↑↓ 导航   PgUp/PgDown/Space 翻页   Home/End 首尾".to_string(),
-                " 操作     Enter 全屏   / 搜索   L 切换语言   q 退出".to_string(),
+                " 操作     Enter 全屏   Tab 切换面板   / 搜索   L 切换语言   q 退出".to_string(),
             ],
             Lang::En => vec![
                 format!(" File     {} [{}/{}]", name, selected, total),
                 " Move     ←→↑↓ Nav   PgUp/PgDown/Space Page   Home/End First/Last".to_string(),
-                " Action   Enter View   / Search   L Language   q Quit".to_string(),
+                " Action   Enter View   Tab Focus   / Search   L Language   q Quit".to_string(),
             ],
+        }
+    }
+
+    pub fn context_prompt_lines(&self, name: &str, selected: usize, total: usize) -> Vec<String> {
+        match self {
+            Lang::Zh => vec![
+                format!(" 文件夹   {} [{}/{}]", name, selected, total),
+                " 导航     ↑↓ 选择   Home/End 首尾   ← 上一级".to_string(),
+                " 操作     →/Enter 进入文件夹   Tab 切换面板   L 切换语言   q 退出".to_string(),
+            ],
+            Lang::En => vec![
+                format!(" Folder   {} [{}/{}]", name, selected, total),
+                " Move     ↑↓ Select   Home/End First/Last   ← Parent".to_string(),
+                " Action   →/Enter Open Folder   Tab Focus   L Language   q Quit".to_string(),
+            ],
+        }
+    }
+
+    pub fn directory_error(&self) -> &'static str {
+        match self {
+            Lang::Zh => "无法读取目录",
+            Lang::En => "Could not read directory",
+        }
+    }
+
+    pub fn status_prompt_line(&self, message: &str) -> String {
+        match self {
+            Lang::Zh => format!(" 状态     {}", message),
+            Lang::En => format!(" Status   {}", message),
         }
     }
 
@@ -210,11 +239,14 @@ mod tests {
             assert!(!lang.title_context().is_empty());
             assert!(!lang.title_gallery().is_empty());
             assert!(!lang.title_info().is_empty());
-            assert!(!lang.empty_context().is_empty());
+            assert!(!lang.empty_folder_context().is_empty());
             assert_eq!(lang.browser_prompt_lines("test.png", 1, 10).len(), 3);
+            assert_eq!(lang.context_prompt_lines("photos", 1, 3).len(), 3);
             assert_eq!(lang.search_prompt_lines(1, 5, true).len(), 3);
             assert_eq!(lang.fullscreen_prompt_lines("test.png", 1, 10, "").len(), 3);
             assert!(!lang.loading_text().is_empty());
+            assert!(!lang.directory_error().is_empty());
+            assert!(!lang.status_prompt_line("message").is_empty());
             assert!(!lang.label_file().is_empty());
             assert!(!lang.label_dims().is_empty());
             assert!(!lang.label_size().is_empty());
@@ -230,10 +262,17 @@ mod tests {
         assert_ne!(Lang::Zh.title_context(), Lang::En.title_context());
         assert_ne!(Lang::Zh.title_gallery(), Lang::En.title_gallery());
         assert_ne!(Lang::Zh.title_info(), Lang::En.title_info());
-        assert_ne!(Lang::Zh.empty_context(), Lang::En.empty_context());
+        assert_ne!(
+            Lang::Zh.empty_folder_context(),
+            Lang::En.empty_folder_context()
+        );
         assert_ne!(
             Lang::Zh.browser_prompt_lines("a", 1, 5),
             Lang::En.browser_prompt_lines("a", 1, 5)
+        );
+        assert_ne!(
+            Lang::Zh.context_prompt_lines("a", 1, 5),
+            Lang::En.context_prompt_lines("a", 1, 5)
         );
         assert_ne!(
             Lang::Zh.search_prompt_lines(1, 5, true),
@@ -244,6 +283,11 @@ mod tests {
             Lang::En.fullscreen_prompt_lines("a", 1, 5, "")
         );
         assert_ne!(Lang::Zh.loading_text(), Lang::En.loading_text());
+        assert_ne!(Lang::Zh.directory_error(), Lang::En.directory_error());
+        assert_ne!(
+            Lang::Zh.status_prompt_line("message"),
+            Lang::En.status_prompt_line("message")
+        );
         assert_ne!(Lang::Zh.label_file(), Lang::En.label_file());
         assert_ne!(Lang::Zh.label_dims(), Lang::En.label_dims());
         assert_ne!(Lang::Zh.label_size(), Lang::En.label_size());

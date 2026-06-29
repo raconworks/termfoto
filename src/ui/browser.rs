@@ -1,4 +1,4 @@
-use crate::app::{App, LoadSize};
+use crate::app::{App, BrowserFocus, LoadSize};
 use crate::ui::layout::three_panel_areas;
 use crate::ui::search::SearchBar;
 use crate::ui::{
@@ -42,15 +42,29 @@ impl<'a> Widget for BrowserView<'a> {
         let cell_h = self.cell_h.max(1);
 
         let areas = three_panel_areas(area);
-        let context_inner = render_panel(areas.context, self.app.lang.title_context(), buf);
-        let gallery_inner = render_panel(areas.gallery, self.app.lang.title_gallery(), buf);
-        let info_inner = render_panel(areas.info, self.app.lang.title_info(), buf);
+        let context_inner = render_panel(
+            areas.context,
+            self.app.lang.title_context(),
+            self.app.browser_focus == BrowserFocus::Context,
+            buf,
+        );
+        let gallery_inner = render_panel(
+            areas.gallery,
+            self.app.lang.title_gallery(),
+            self.app.browser_focus == BrowserFocus::Gallery,
+            buf,
+        );
+        let info_inner = render_panel(areas.info, self.app.lang.title_info(), false, buf);
 
         let context_entries = self.app.directory_context_for_browser();
+        self.app
+            .clamp_context_selection(context_entries.len(), context_inner.height as usize);
         render_directory_context(
             context_inner,
             &context_entries,
-            self.app.lang.empty_context(),
+            self.app.lang.empty_folder_context(),
+            Some(self.app.context_selected),
+            self.app.context_scroll,
             buf,
         );
         render_info_panel(
@@ -128,14 +142,33 @@ impl<'a> Widget for BrowserView<'a> {
                 .get(self.app.selected)
                 .map(|e| e.filename.as_str())
                 .unwrap_or("");
-            let lines = self.app.lang.browser_prompt_lines(
-                selected_name,
-                self.app
-                    .selected
-                    .saturating_add(1)
-                    .min(self.app.images.len()),
-                self.app.images.len(),
-            );
+            let mut lines = match self.app.browser_focus {
+                BrowserFocus::Gallery => self.app.lang.browser_prompt_lines(
+                    selected_name,
+                    self.app
+                        .selected
+                        .saturating_add(1)
+                        .min(self.app.images.len()),
+                    self.app.images.len(),
+                ),
+                BrowserFocus::Context => {
+                    let context_name = context_entries
+                        .get(self.app.context_selected)
+                        .map(|entry| entry.name.as_str())
+                        .unwrap_or("");
+                    self.app.lang.context_prompt_lines(
+                        context_name,
+                        self.app
+                            .context_selected
+                            .saturating_add(1)
+                            .min(context_entries.len()),
+                        context_entries.len(),
+                    )
+                }
+            };
+            if let Some(message) = self.app.browser_status_message() {
+                lines[0] = self.app.lang.status_prompt_line(&message);
+            }
             render_prompt_lines(areas.prompt, &lines, buf);
         }
     }
@@ -323,7 +356,11 @@ pub fn populate_protocol_cache(
     let visible_end = (start + app.visible_rows * app.grid_cols).min(app.images.len());
 
     for slot in thumbnail_request_order(start, visible_end, app.grid_cols, app.images.len()) {
-        if app.protocol_cache.contains_key(&slot) || app.requested.contains(&(slot, size.clone())) {
+        if app.protocol_cache.contains_key(&slot)
+            || app
+                .requested
+                .contains(&(app.directory_generation, slot, size.clone()))
+        {
             continue;
         }
         app.request_load(slot, size.clone());
@@ -443,5 +480,130 @@ mod tests {
             .map(|x| buf.cell((x, prompt_text_row)).unwrap().symbol())
             .collect();
         assert!(prompt_row.contains("sample.png"));
+    }
+
+    #[test]
+    fn browser_focus_changes_panel_border_style() {
+        let (_dir, mut app) = render_test_app();
+        app.browser_focus = BrowserFocus::Context;
+        let area = Rect::new(0, 0, 100, 20);
+        let areas = three_panel_areas(area);
+        let mut buf = Buffer::empty(area);
+
+        BrowserView {
+            app: &mut app,
+            cell_w: 24,
+            cell_h: 8,
+        }
+        .render(area, &mut buf);
+
+        assert_eq!(
+            buf.cell((areas.context.x, areas.context.y)).unwrap().fg,
+            Color::Cyan
+        );
+        assert_eq!(
+            buf.cell((areas.gallery.x, areas.gallery.y)).unwrap().fg,
+            Color::DarkGray
+        );
+    }
+
+    #[test]
+    fn browser_context_selection_is_highlighted() {
+        let (_dir, mut app) = render_test_app();
+        fs::create_dir(app.image_dir.join("album")).unwrap();
+        app.browser_focus = BrowserFocus::Context;
+        app.context_dir = app.image_dir.clone();
+        app.context_selected = 1;
+        let area = Rect::new(0, 0, 100, 20);
+        let areas = three_panel_areas(area);
+        let mut buf = Buffer::empty(area);
+
+        BrowserView {
+            app: &mut app,
+            cell_w: 24,
+            cell_h: 8,
+        }
+        .render(area, &mut buf);
+
+        let highlighted = buf
+            .content()
+            .iter()
+            .any(|cell| cell.bg == Color::Cyan && cell.symbol() != " ");
+        assert!(highlighted);
+
+        let context_text: String = (areas.context.y..areas.context.y + areas.context.height)
+            .flat_map(|y| {
+                (areas.context.x..areas.context.x + areas.context.width).map(move |x| (x, y))
+            })
+            .map(|pos| buf.cell(pos).unwrap().symbol())
+            .collect();
+        assert!(context_text.contains("    > album/"));
+    }
+
+    #[test]
+    fn browser_render_with_no_images_leaves_gallery_info_and_filename_empty() {
+        let dir = tempdir().unwrap();
+        let (tx, _rx) = std::sync::mpsc::channel::<LoadRequest>();
+        let (_tx2, rx2) = std::sync::mpsc::channel::<LoadResult>();
+        let mut app = App::new(
+            AppStart {
+                images: Vec::new(),
+                image_dir: dir.path().to_path_buf(),
+                state: AppState::Browser,
+                selected: 0,
+            },
+            tx,
+            rx2,
+            Lang::En,
+            Picker::halfblocks(),
+        );
+        let area = Rect::new(0, 0, 100, 20);
+        let mut buf = Buffer::empty(area);
+
+        BrowserView {
+            app: &mut app,
+            cell_w: 24,
+            cell_h: 8,
+        }
+        .render(area, &mut buf);
+
+        let text = buffer_text(&buf);
+        assert!(!text.contains("old.png"));
+        assert!(text.contains("File      [0/0]"));
+    }
+
+    #[test]
+    fn browser_prompt_changes_for_context_and_search_modes() {
+        let (_dir, mut app) = render_test_app();
+        app.browser_focus = BrowserFocus::Context;
+        let area = Rect::new(0, 0, 100, 20);
+        let mut buf = Buffer::empty(area);
+
+        BrowserView {
+            app: &mut app,
+            cell_w: 24,
+            cell_h: 8,
+        }
+        .render(area, &mut buf);
+
+        let text = buffer_text(&buf);
+        assert!(text.contains("Folder"));
+        assert!(text.contains("Open Folder"));
+
+        app.handle_key(
+            crossterm::event::KeyCode::Char('/'),
+            crossterm::event::KeyModifiers::NONE,
+        );
+        let mut buf = Buffer::empty(area);
+        BrowserView {
+            app: &mut app,
+            cell_w: 24,
+            cell_h: 8,
+        }
+        .render(area, &mut buf);
+
+        let text = buffer_text(&buf);
+        assert!(text.contains("Cycle"));
+        assert!(!text.contains("Open Folder"));
     }
 }

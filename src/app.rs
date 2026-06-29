@@ -19,7 +19,7 @@ use ratatui_image::{
 };
 
 use crate::lang::Lang;
-use crate::scanner::ImageEntry;
+use crate::scanner::{scan_directory, ImageEntry};
 use crate::ui::search::{SearchAction, SearchState};
 
 const MAX_ANIMATION_FRAMES: usize = 120;
@@ -47,7 +47,9 @@ pub enum FullscreenContent {
 /// Channel payload for a completed background image load.
 pub struct LoadResult {
     idx: usize,
+    path: PathBuf,
     size: LoadSize,
+    generation: u64,
     content: LoadContent,
     dims: Option<(u32, u32)>,
 }
@@ -63,12 +65,24 @@ pub enum AppState {
     Fullscreen,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BrowserFocus {
+    Gallery,
+    Context,
+}
+
 pub struct App {
     pub state: AppState,
     pub images: Vec<ImageEntry>,
     pub image_dir: PathBuf,
+    pub(crate) context_dir: PathBuf,
     pub selected: usize,
     pub scroll_row: usize,
+    pub browser_focus: BrowserFocus,
+    pub context_selected: usize,
+    pub context_scroll: usize,
+    context_visible_rows: usize,
+    pub directory_generation: u64,
     pub protocol_cache: HashMap<usize, Protocol>,
     pub fullscreen_content: Option<FullscreenContent>,
     fullscreen_frame_idx: usize,
@@ -81,7 +95,7 @@ pub struct App {
     pub thumb_w: u16,
     pub thumb_h: u16,
     pub visible_rows: usize,
-    pub requested: HashSet<(usize, LoadSize)>,
+    pub requested: HashSet<(u64, usize, LoadSize)>,
     pub search: Option<SearchState>,
     pub zoom: f32,
     pub pan_x: i16,
@@ -102,6 +116,7 @@ pub struct App {
     pub lang: Lang,
     load_tx: Sender<LoadRequest>,
     load_rx: Receiver<LoadResult>,
+    status_message: Option<(String, Instant)>,
 }
 
 pub struct AppStart {
@@ -203,14 +218,15 @@ struct RenderResult {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DirectoryContextKind {
     Directory,
-    File,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DirectoryContextEntry {
     pub name: String,
+    pub path: PathBuf,
     pub kind: DirectoryContextKind,
     pub is_current: bool,
+    pub depth: usize,
 }
 
 fn zoom_render_geometry(
@@ -328,9 +344,15 @@ impl App {
         let mut app = Self {
             state,
             images,
+            context_dir: image_dir.clone(),
             image_dir,
             selected,
             scroll_row: 0,
+            browser_focus: BrowserFocus::Gallery,
+            context_selected: 0,
+            context_scroll: 0,
+            context_visible_rows: 1,
+            directory_generation: 0,
             protocol_cache: HashMap::new(),
             fullscreen_content: None,
             fullscreen_frame_idx: 0,
@@ -366,7 +388,9 @@ impl App {
             lang,
             load_tx,
             load_rx,
+            status_message: None,
         };
+        app.reset_context_selection_to_current_folder();
         // If launched directly into fullscreen (e.g. "termfoto image.png"),
         // immediately request the original load so the image appears.
         if fullscreen_pending {
@@ -376,16 +400,133 @@ impl App {
     }
 
     pub fn directory_context_for_browser(&self) -> Vec<DirectoryContextEntry> {
-        let parent = context_parent(self.image_dir.as_path());
-        directory_context_entries(parent, Some(self.image_dir.as_path()))
+        browser_directory_context_entries(self.context_dir.as_path())
     }
 
-    pub fn directory_context_for_fullscreen(&self) -> Vec<DirectoryContextEntry> {
-        let Some(entry) = self.images.get(self.selected) else {
-            return Vec::new();
+    pub fn clamp_context_selection(&mut self, len: usize, visible_rows: usize) {
+        self.context_visible_rows = visible_rows.max(1);
+        if len == 0 {
+            self.context_selected = 0;
+            self.context_scroll = 0;
+            return;
+        }
+        self.context_selected = self.context_selected.min(len - 1);
+        self.clamp_context_scroll_bounds(len);
+    }
+
+    fn clamp_context_scroll_to_selection(&mut self, len: usize) {
+        if len == 0 {
+            self.context_scroll = 0;
+            return;
+        }
+        let visible_rows = self.context_visible_rows.max(1);
+        if self.context_selected < self.context_scroll {
+            self.context_scroll = self.context_selected;
+        } else if self.context_selected >= self.context_scroll + visible_rows {
+            self.context_scroll = self.context_selected + 1 - visible_rows;
+        }
+        self.clamp_context_scroll_bounds(len);
+    }
+
+    fn clamp_context_scroll_bounds(&mut self, len: usize) {
+        let max_scroll = len.saturating_sub(self.context_visible_rows.max(1));
+        self.context_scroll = self.context_scroll.min(max_scroll);
+    }
+
+    fn context_down(&mut self) {
+        let len = self.directory_context_for_browser().len();
+        if self.context_selected + 1 < len {
+            self.context_selected += 1;
+            self.clamp_context_scroll_to_selection(len);
+        }
+    }
+
+    fn context_up(&mut self) {
+        self.context_selected = self.context_selected.saturating_sub(1);
+        let len = self.directory_context_for_browser().len();
+        self.clamp_context_scroll_to_selection(len);
+    }
+
+    fn context_home(&mut self) {
+        self.context_selected = 0;
+        let len = self.directory_context_for_browser().len();
+        self.clamp_context_scroll_to_selection(len);
+    }
+
+    fn context_end(&mut self) {
+        let len = self.directory_context_for_browser().len();
+        self.context_selected = len.saturating_sub(1);
+        self.clamp_context_scroll_to_selection(len);
+    }
+
+    fn enter_selected_context_directory(&mut self) {
+        let entries = self.directory_context_for_browser();
+        let Some(entry) = entries.get(self.context_selected) else {
+            return;
         };
-        let parent = context_parent(entry.path.as_path());
-        directory_context_entries(parent, Some(entry.path.as_path()))
+        self.enter_directory_with_context(entry.path.clone(), entry.path.clone());
+    }
+
+    fn enter_parent_directory(&mut self) {
+        let Some(new_image_dir) = browser_context_parent(self.image_dir.as_path()) else {
+            return;
+        };
+        self.enter_directory_with_context(new_image_dir.clone(), new_image_dir);
+    }
+
+    #[cfg(test)]
+    fn enter_directory(&mut self, dir: PathBuf) {
+        self.enter_directory_with_context(dir.clone(), dir);
+    }
+
+    fn enter_directory_with_context(&mut self, dir: PathBuf, context_dir: PathBuf) {
+        let Ok(images) = scan_directory(&dir) else {
+            self.status_message = Some((
+                format!("{}: {}", self.lang.directory_error(), dir.display()),
+                Instant::now() + Duration::from_secs(2),
+            ));
+            return;
+        };
+
+        self.image_dir = dir;
+        self.context_dir = context_dir;
+        self.images = images;
+        self.selected = 0;
+        self.scroll_row = 0;
+        self.reset_context_selection_to_current_folder();
+        self.search = None;
+        self.status_message = None;
+        self.directory_generation = self.directory_generation.wrapping_add(1);
+        self.clear_directory_caches();
+    }
+
+    fn reset_context_selection_to_current_folder(&mut self) {
+        let entries = self.directory_context_for_browser();
+        self.context_selected = if entries.len() > 1 { 1 } else { 0 };
+        self.context_scroll = 0;
+    }
+
+    fn clear_directory_caches(&mut self) {
+        self.clear_protocol_cache();
+        self.reset_fullscreen_content();
+        self.fullscreen_pending = false;
+        self.fullscreen_image_w = 0;
+        self.fullscreen_image_h = 0;
+        self.zoom = 1.0;
+        self.pan_x = 0;
+        self.pan_y = 0;
+        self.fullscreen_original_cache.clear();
+        self.fullscreen_original_cache_bytes = 0;
+        self.fullscreen_render_cache.clear();
+    }
+
+    pub fn browser_status_message(&mut self) -> Option<String> {
+        let (message, expires_at) = self.status_message.as_ref()?;
+        if Instant::now() >= *expires_at {
+            self.status_message = None;
+            return None;
+        }
+        Some(message.clone())
     }
 
     pub fn navigate_left(&mut self) {
@@ -639,11 +780,20 @@ impl App {
         while let Ok(result) = self.load_rx.try_recv() {
             let LoadResult {
                 idx,
+                path,
                 size,
+                generation,
                 content,
                 dims,
             } = result;
-            self.requested.remove(&(idx, size.clone()));
+            self.requested.remove(&(generation, idx, size.clone()));
+            if generation != self.directory_generation {
+                continue;
+            }
+            let path_is_current = self.images.get(idx).is_some_and(|entry| entry.path == path);
+            if !path_is_current {
+                continue;
+            }
             match content {
                 LoadContent::Original(content) => match content {
                     FullscreenContent::Static(sc) => {
@@ -931,15 +1081,23 @@ impl App {
     }
 
     pub fn request_load(&mut self, idx: usize, size: LoadSize) {
+        let Some(entry) = self.images.get(idx) else {
+            return;
+        };
         if matches!(size, LoadSize::Original) && self.fullscreen_original_cache.contains(&idx) {
             return;
         }
-        let key = (idx, size.clone());
+        let key = (self.directory_generation, idx, size.clone());
         if self.requested.contains(&key) {
             return;
         }
         self.requested.insert(key);
-        let _ = self.load_tx.send(LoadRequest { idx, size });
+        let _ = self.load_tx.send(LoadRequest {
+            idx,
+            path: entry.path.clone(),
+            size,
+            generation: self.directory_generation,
+        });
     }
 
     pub fn clear_protocol_cache(&mut self) {
@@ -971,18 +1129,39 @@ impl App {
                         self.search = Some(SearchState::new(self.selected, trigger));
                         return false;
                     }
-                    KeyCode::Left => self.navigate_left(),
-                    KeyCode::Right => self.navigate_right(),
-                    KeyCode::Up => self.navigate_up(),
-                    KeyCode::Down => self.navigate_down(),
-                    KeyCode::PageDown | KeyCode::Char(' ') => {
-                        self.navigate_page_down(self.visible_rows)
+                    KeyCode::Tab | KeyCode::BackTab => {
+                        self.browser_focus = match self.browser_focus {
+                            BrowserFocus::Gallery => BrowserFocus::Context,
+                            BrowserFocus::Context => BrowserFocus::Gallery,
+                        };
                     }
-                    KeyCode::PageUp => self.navigate_page_up(self.visible_rows),
-                    KeyCode::Home => self.navigate_home(),
-                    KeyCode::End => self.navigate_end(),
-                    KeyCode::Enter => self.enter_fullscreen(),
-                    _ => {}
+                    _ => match self.browser_focus {
+                        BrowserFocus::Gallery => match code {
+                            KeyCode::Left => self.navigate_left(),
+                            KeyCode::Right => self.navigate_right(),
+                            KeyCode::Up => self.navigate_up(),
+                            KeyCode::Down => self.navigate_down(),
+                            KeyCode::PageDown | KeyCode::Char(' ') => {
+                                self.navigate_page_down(self.visible_rows)
+                            }
+                            KeyCode::PageUp => self.navigate_page_up(self.visible_rows),
+                            KeyCode::Home => self.navigate_home(),
+                            KeyCode::End => self.navigate_end(),
+                            KeyCode::Enter => self.enter_fullscreen(),
+                            _ => {}
+                        },
+                        BrowserFocus::Context => match code {
+                            KeyCode::Left => self.enter_parent_directory(),
+                            KeyCode::Right | KeyCode::Enter => {
+                                self.enter_selected_context_directory()
+                            }
+                            KeyCode::Up => self.context_up(),
+                            KeyCode::Down => self.context_down(),
+                            KeyCode::Home => self.context_home(),
+                            KeyCode::End => self.context_end(),
+                            _ => {}
+                        },
+                    },
                 }
             }
             AppState::Fullscreen => match code {
@@ -1130,69 +1309,55 @@ impl App {
     }
 }
 
-fn directory_context_entries(
-    dir: &Path,
-    current_path: Option<&Path>,
-) -> Vec<DirectoryContextEntry> {
-    let Ok(read_dir) = std::fs::read_dir(dir) else {
-        return Vec::new();
+fn browser_directory_context_entries(context_dir: &Path) -> Vec<DirectoryContextEntry> {
+    let mut entries = vec![DirectoryContextEntry {
+        name: directory_display_name(context_dir),
+        path: context_dir.to_path_buf(),
+        kind: DirectoryContextKind::Directory,
+        is_current: true,
+        depth: 0,
+    }];
+
+    let Ok(read_dir) = std::fs::read_dir(context_dir) else {
+        return entries;
     };
 
-    let mut entries: Vec<_> = read_dir
+    let mut children: Vec<_> = read_dir
         .filter_map(|res| res.ok())
         .filter_map(|entry| {
-            let path = entry.path();
             let file_type = entry.file_type().ok()?;
-            let kind = if file_type.is_dir() {
-                DirectoryContextKind::Directory
-            } else if file_type.is_file() {
-                DirectoryContextKind::File
-            } else {
+            if !file_type.is_dir() {
                 return None;
-            };
-            let name = entry.file_name().to_string_lossy().into_owned();
-            let is_current =
-                current_path.is_some_and(|current| context_paths_match(&path, current));
+            }
             Some(DirectoryContextEntry {
-                name,
-                kind,
-                is_current,
+                name: entry.file_name().to_string_lossy().into_owned(),
+                path: entry.path(),
+                kind: DirectoryContextKind::Directory,
+                is_current: false,
+                depth: 1,
             })
         })
         .collect();
 
-    entries.sort_by(|a, b| {
-        let rank_a = match a.kind {
-            DirectoryContextKind::Directory => 0,
-            DirectoryContextKind::File => 1,
-        };
-        let rank_b = match b.kind {
-            DirectoryContextKind::Directory => 0,
-            DirectoryContextKind::File => 1,
-        };
-        rank_a.cmp(&rank_b).then_with(|| a.name.cmp(&b.name))
-    });
+    children.sort_by(|a, b| a.name.cmp(&b.name));
+    entries.extend(children);
     entries
 }
 
-fn context_parent(path: &Path) -> &Path {
-    match path.parent() {
-        Some(parent) if parent.as_os_str().is_empty() => Path::new("."),
-        Some(parent) => parent,
-        None => path,
-    }
+fn directory_display_name(path: &Path) -> String {
+    path.file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .filter(|name| !name.is_empty())
+        .unwrap_or_else(|| path.to_string_lossy().into_owned())
 }
 
-fn context_paths_match(entry_path: &Path, current_path: &Path) -> bool {
-    if entry_path == current_path {
-        return true;
+fn browser_context_parent(path: &Path) -> Option<PathBuf> {
+    let parent = path.parent()?;
+    if parent.as_os_str().is_empty() {
+        Some(PathBuf::from("."))
+    } else {
+        Some(parent.to_path_buf())
     }
-
-    if let (Ok(entry), Ok(current)) = (entry_path.canonicalize(), current_path.canonicalize()) {
-        return entry == current;
-    }
-
-    entry_path.file_name().is_some() && entry_path.file_name() == current_path.file_name()
 }
 
 /// Size mode for background image loading.
@@ -1208,7 +1373,9 @@ pub enum LoadSize {
 #[derive(Debug, Clone)]
 pub struct LoadRequest {
     pub idx: usize,
+    pub path: PathBuf,
     pub size: LoadSize,
+    pub generation: u64,
 }
 
 fn frame_delay(delay: image::Delay) -> Duration {
@@ -1426,18 +1593,17 @@ fn integer_source_rect(
 /// Returns (sender, receiver) for App to use.
 pub fn spawn_image_loader(
     picker: Picker,
-    paths: Vec<std::path::PathBuf>,
+    _paths: Vec<std::path::PathBuf>,
 ) -> (Sender<LoadRequest>, Receiver<LoadResult>) {
     let (load_tx, load_rx) = std::sync::mpsc::channel::<LoadRequest>();
     let (done_tx, done_rx) = std::sync::mpsc::channel::<LoadResult>();
-    let paths = std::sync::Arc::new(paths);
 
     let (thumb_tx, thumb_rx) = std::sync::mpsc::channel::<LoadRequest>();
     let (original_tx, original_rx) = std::sync::mpsc::channel::<LoadRequest>();
 
     std::thread::spawn(move || {
         while let Ok(req) = load_rx.recv() {
-            let routed = match req.size {
+            let routed = match &req.size {
                 LoadSize::Thumbnail { .. } => thumb_tx.send(req),
                 LoadSize::Original => original_tx.send(req),
             };
@@ -1447,21 +1613,14 @@ pub fn spawn_image_loader(
         }
     });
 
-    spawn_loader_workers(
-        picker.clone(),
-        Arc::clone(&paths),
-        done_tx.clone(),
-        thumb_rx,
-        3,
-    );
-    spawn_loader_workers(picker, paths, done_tx, original_rx, 1);
+    spawn_loader_workers(picker.clone(), done_tx.clone(), thumb_rx, 3);
+    spawn_loader_workers(picker, done_tx, original_rx, 1);
 
     (load_tx, done_rx)
 }
 
 fn spawn_loader_workers(
     picker: Picker,
-    paths: Arc<Vec<std::path::PathBuf>>,
     done_tx: Sender<LoadResult>,
     load_rx: Receiver<LoadRequest>,
     workers: usize,
@@ -1469,7 +1628,6 @@ fn spawn_loader_workers(
     let rx = Arc::new(std::sync::Mutex::new(load_rx));
     for _ in 0..workers {
         let picker = picker.clone();
-        let paths = Arc::clone(&paths);
         let done_tx = done_tx.clone();
         let rx = Arc::clone(&rx);
 
@@ -1482,22 +1640,25 @@ fn spawn_loader_workers(
                 }
             };
 
-            if let Some(result) = process_load_request(&picker, &paths, req) {
+            if let Some(result) = process_load_request(&picker, req) {
                 let _ = done_tx.send(result);
             }
         });
     }
 }
 
-fn process_load_request(
-    picker: &Picker,
-    paths: &[std::path::PathBuf],
-    req: LoadRequest,
-) -> Option<LoadResult> {
-    let path = paths.get(req.idx)?;
-    match req.size {
-        LoadSize::Thumbnail { w, h } => process_thumbnail_request(picker, path, req.idx, w, h),
-        LoadSize::Original => process_original_request(picker, path, req.idx),
+fn process_load_request(picker: &Picker, req: LoadRequest) -> Option<LoadResult> {
+    let LoadRequest {
+        idx,
+        path,
+        size,
+        generation,
+    } = req;
+    match size {
+        LoadSize::Thumbnail { w, h } => {
+            process_thumbnail_request(picker, path.as_path(), idx, generation, w, h)
+        }
+        LoadSize::Original => process_original_request(picker, path.as_path(), idx, generation),
     }
 }
 
@@ -1505,6 +1666,7 @@ fn process_thumbnail_request(
     picker: &Picker,
     path: &Path,
     idx: usize,
+    generation: u64,
     w: u16,
     h: u16,
 ) -> Option<LoadResult> {
@@ -1518,13 +1680,20 @@ fn process_thumbnail_request(
 
     Some(LoadResult {
         idx,
+        path: path.to_path_buf(),
         size: LoadSize::Thumbnail { w, h },
+        generation,
         content: LoadContent::Thumbnail(protocol),
         dims,
     })
 }
 
-fn process_original_request(picker: &Picker, path: &Path, idx: usize) -> Option<LoadResult> {
+fn process_original_request(
+    picker: &Picker,
+    path: &Path,
+    idx: usize,
+    generation: u64,
+) -> Option<LoadResult> {
     let dims = image::image_dimensions(path).ok()?;
     let font_size = picker.font_size();
     let nat_w = dims.0.div_ceil(font_size.width as u32) as u16;
@@ -1543,7 +1712,9 @@ fn process_original_request(picker: &Picker, path: &Path, idx: usize) -> Option<
 
     Some(LoadResult {
         idx,
+        path: path.to_path_buf(),
         size: LoadSize::Original,
+        generation,
         content: LoadContent::Original(content),
         dims: Some(dims),
     })
@@ -1615,6 +1786,33 @@ mod tests {
         )
     }
 
+    fn make_app_with_load_done(count: usize) -> (App, Sender<LoadResult>) {
+        let images = (0..count)
+            .map(|i| ImageEntry {
+                path: PathBuf::from(format!("img{:03}.png", i)),
+                filename: format!("img{:03}.png", i),
+                file_size: 0,
+            })
+            .collect();
+        let (tx, _rx) = std::sync::mpsc::channel::<LoadRequest>();
+        let (done_tx, done_rx) = std::sync::mpsc::channel::<LoadResult>();
+        (
+            App::new(
+                AppStart {
+                    images,
+                    image_dir: PathBuf::from("."),
+                    state: AppState::Browser,
+                    selected: 0,
+                },
+                tx,
+                done_rx,
+                Lang::Zh,
+                Picker::halfblocks(),
+            ),
+            done_tx,
+        )
+    }
+
     fn make_protocol() -> Protocol {
         let picker = Picker::halfblocks();
         let img = image::DynamicImage::new_rgba8(1, 1);
@@ -1634,47 +1832,58 @@ mod tests {
         })
     }
 
+    fn write_png(path: &Path) {
+        image::DynamicImage::ImageRgba8(image::RgbaImage::from_pixel(
+            1,
+            1,
+            image::Rgba([1, 2, 3, 255]),
+        ))
+        .save(path)
+        .unwrap();
+    }
+
     #[test]
-    fn browser_directory_context_lists_parent_and_highlights_image_dir() {
+    fn browser_directory_context_lists_current_child_directories_only() {
         let dir = tempdir().unwrap();
         let photos = dir.path().join("photos");
-        let sibling = dir.path().join("sibling");
         fs::create_dir(&photos).unwrap();
-        fs::create_dir(&sibling).unwrap();
-        fs::write(dir.path().join("note.txt"), b"note").unwrap();
+        fs::create_dir(photos.join("z_album")).unwrap();
+        fs::create_dir(photos.join("a_album")).unwrap();
+        fs::write(photos.join("note.txt"), b"note").unwrap();
+        write_png(&photos.join("photo.png"));
 
         let mut app = make_app(0);
-        app.image_dir = photos;
+        app.image_dir = photos.clone();
+        app.context_dir = photos;
 
         let entries = app.directory_context_for_browser();
         let names: Vec<_> = entries.iter().map(|entry| entry.name.as_str()).collect();
 
-        assert_eq!(names, vec!["photos", "sibling", "note.txt"]);
+        assert_eq!(names, vec!["photos", "a_album", "z_album"]);
         assert!(entries[0].is_current);
+        assert_eq!(entries[0].depth, 0);
+        assert!(entries[1..].iter().all(|entry| entry.depth == 1));
+        assert!(entries[1..].iter().all(|entry| !entry.is_current));
+        assert!(!entries.iter().any(|entry| entry.name == ".."));
         assert_eq!(entries[0].kind, DirectoryContextKind::Directory);
-        assert!(!entries[1].is_current);
+        assert!(entries
+            .iter()
+            .all(|entry| entry.kind == DirectoryContextKind::Directory));
     }
 
     #[test]
-    fn fullscreen_directory_context_lists_image_parent_and_highlights_file() {
+    fn browser_context_starts_at_current_image_directory() {
         let dir = tempdir().unwrap();
         let photos = dir.path().join("photos");
         fs::create_dir(&photos).unwrap();
         fs::create_dir(photos.join("album")).unwrap();
-        fs::write(photos.join("b.png"), b"b").unwrap();
-        fs::write(photos.join("a.png"), b"a").unwrap();
 
-        let images = vec![ImageEntry {
-            path: photos.join("b.png"),
-            filename: "b.png".to_string(),
-            file_size: 1,
-        }];
         let (tx, _rx) = std::sync::mpsc::channel::<LoadRequest>();
         let (_tx2, rx2) = std::sync::mpsc::channel::<LoadResult>();
         let app = App::new(
             AppStart {
-                images,
-                image_dir: photos.clone(),
+                images: Vec::new(),
+                image_dir: photos,
                 state: AppState::Browser,
                 selected: 0,
             },
@@ -1684,31 +1893,31 @@ mod tests {
             Picker::halfblocks(),
         );
 
-        let entries = app.directory_context_for_fullscreen();
+        let entries = app.directory_context_for_browser();
         let names: Vec<_> = entries.iter().map(|entry| entry.name.as_str()).collect();
-
-        assert_eq!(names, vec!["album", "a.png", "b.png"]);
-        assert!(entries[2].is_current);
-        assert_eq!(entries[2].kind, DirectoryContextKind::File);
+        assert_eq!(names, vec!["photos", "album"]);
     }
 
     #[test]
-    fn directory_context_missing_directory_is_empty() {
+    fn browser_directory_context_missing_directory_keeps_current_entry() {
         let missing = PathBuf::from("/tmp/termfoto-missing-directory-context");
 
-        assert!(directory_context_entries(&missing, None).is_empty());
+        assert_eq!(browser_directory_context_entries(&missing).len(), 1);
     }
 
     #[test]
     fn browser_directory_context_handles_relative_single_component_dir() {
-        let mut app = make_app(0);
-        app.image_dir = PathBuf::from("src");
+        let entries = browser_directory_context_entries(Path::new("."));
 
-        let entries = app.directory_context_for_browser();
-        let src = entries.iter().find(|entry| entry.name == "src").unwrap();
+        assert!(entries.iter().any(|entry| entry.name == "src"));
+        assert!(!entries.iter().any(|entry| entry.name == ".."));
+    }
 
-        assert!(src.is_current);
-        assert_eq!(src.kind, DirectoryContextKind::Directory);
+    #[test]
+    fn browser_directory_context_omits_parent_for_root() {
+        let entries = browser_directory_context_entries(Path::new("/"));
+
+        assert!(!entries.iter().any(|entry| entry.name == ".."));
     }
 
     fn make_animation_frame(delay_ms: u64) -> AnimationFrame {
@@ -1806,11 +2015,17 @@ mod tests {
         app.request_load(0, LoadSize::Thumbnail { w: 10, h: 5 });
         app.request_load(0, LoadSize::Original);
 
-        assert_eq!(
-            rx.try_recv().unwrap().size,
-            LoadSize::Thumbnail { w: 10, h: 5 }
-        );
-        assert_eq!(rx.try_recv().unwrap().size, LoadSize::Original);
+        let thumb = rx.try_recv().unwrap();
+        assert_eq!(thumb.idx, 0);
+        assert_eq!(thumb.path, PathBuf::from("img000.png"));
+        assert_eq!(thumb.generation, app.directory_generation);
+        assert_eq!(thumb.size, LoadSize::Thumbnail { w: 10, h: 5 });
+
+        let original = rx.try_recv().unwrap();
+        assert_eq!(original.idx, 0);
+        assert_eq!(original.path, PathBuf::from("img000.png"));
+        assert_eq!(original.generation, app.directory_generation);
+        assert_eq!(original.size, LoadSize::Original);
     }
 
     #[test]
@@ -1900,10 +2115,12 @@ mod tests {
         }
 
         let picker = Picker::halfblocks();
-        let result = process_original_request(&picker, &path, 7).unwrap();
+        let result = process_original_request(&picker, &path, 7, 11).unwrap();
 
         assert_eq!(result.idx, 7);
+        assert_eq!(result.path, path);
         assert_eq!(result.size, LoadSize::Original);
+        assert_eq!(result.generation, 11);
         assert_eq!(result.dims, Some((1, 1)));
         match result.content {
             LoadContent::Original(FullscreenContent::Animation(frames)) => {
@@ -1922,10 +2139,12 @@ mod tests {
             .unwrap();
 
         let picker = Picker::halfblocks();
-        let result = process_original_request(&picker, &path, 2).unwrap();
+        let result = process_original_request(&picker, &path, 2, 13).unwrap();
 
         assert_eq!(result.idx, 2);
+        assert_eq!(result.path, path);
         assert_eq!(result.size, LoadSize::Original);
+        assert_eq!(result.generation, 13);
         assert_eq!(result.dims, Some((3, 2)));
         match result.content {
             LoadContent::Original(FullscreenContent::Static(sc)) => {
@@ -1951,10 +2170,12 @@ mod tests {
         .unwrap();
 
         let picker = Picker::halfblocks();
-        let result = process_thumbnail_request(&picker, &path, 5, 8, 4).unwrap();
+        let result = process_thumbnail_request(&picker, &path, 5, 17, 8, 4).unwrap();
 
         assert_eq!(result.idx, 5);
+        assert_eq!(result.path, path);
         assert_eq!(result.size, LoadSize::Thumbnail { w: 8, h: 4 });
+        assert_eq!(result.generation, 17);
         assert_eq!(result.dims, Some((4, 3)));
         match result.content {
             LoadContent::Thumbnail(protocol) => assert!(protocol.size().width <= 8),
@@ -2250,6 +2471,284 @@ mod tests {
         app.clear_protocol_cache();
         assert!(app.protocol_cache.is_empty());
         assert_eq!(app.cache_width, 0);
+    }
+
+    #[test]
+    fn tab_and_backtab_toggle_browser_focus() {
+        let mut app = make_app(1);
+
+        assert_eq!(app.browser_focus, BrowserFocus::Gallery);
+        app.handle_key(KeyCode::Tab, KeyModifiers::NONE);
+        assert_eq!(app.browser_focus, BrowserFocus::Context);
+        app.handle_key(KeyCode::BackTab, KeyModifiers::SHIFT);
+        assert_eq!(app.browser_focus, BrowserFocus::Gallery);
+    }
+
+    #[test]
+    fn context_focus_moves_selection_with_arrow_keys() {
+        let dir = tempdir().unwrap();
+        let current = dir.path().join("current");
+        fs::create_dir(&current).unwrap();
+        fs::create_dir(current.join("a_child")).unwrap();
+        fs::create_dir(current.join("m_child")).unwrap();
+        fs::create_dir(current.join("z_child")).unwrap();
+
+        let mut app = make_app(0);
+        app.image_dir = current.clone();
+        app.context_dir = current;
+        app.reset_context_selection_to_current_folder();
+        app.browser_focus = BrowserFocus::Context;
+
+        assert_eq!(app.context_selected, 1);
+        app.handle_key(KeyCode::Down, KeyModifiers::NONE);
+        assert_eq!(app.context_selected, 2);
+        app.handle_key(KeyCode::Up, KeyModifiers::NONE);
+        assert_eq!(app.context_selected, 1);
+        app.handle_key(KeyCode::End, KeyModifiers::NONE);
+        assert_eq!(app.context_selected, 3);
+        app.handle_key(KeyCode::Home, KeyModifiers::NONE);
+        assert_eq!(app.context_selected, 0);
+    }
+
+    #[test]
+    fn context_render_clamp_does_not_auto_scroll_to_selection() {
+        let mut app = make_app(0);
+        app.context_selected = 8;
+        app.context_scroll = 0;
+
+        app.clamp_context_selection(10, 5);
+
+        assert_eq!(app.context_selected, 8);
+        assert_eq!(app.context_scroll, 0);
+    }
+
+    #[test]
+    fn context_scroll_clamp_fills_visible_height_when_possible() {
+        let mut app = make_app(0);
+        app.context_selected = 9;
+        app.context_scroll = 9;
+
+        app.clamp_context_selection(10, 5);
+
+        assert_eq!(app.context_scroll, 5);
+    }
+
+    #[test]
+    fn context_scroll_resets_when_all_entries_fit() {
+        let mut app = make_app(0);
+        app.context_selected = 2;
+        app.context_scroll = 4;
+
+        app.clamp_context_selection(3, 8);
+
+        assert_eq!(app.context_scroll, 0);
+    }
+
+    #[test]
+    fn context_enter_switches_to_directory_and_resets_browser_state() {
+        let dir = tempdir().unwrap();
+        let current = dir.path().join("current");
+        let child = current.join("child");
+        fs::create_dir(&current).unwrap();
+        fs::create_dir(&child).unwrap();
+        write_png(&current.join("old.png"));
+        write_png(&child.join("new.png"));
+
+        let images = scan_directory(&current).unwrap();
+        let (tx, _rx) = std::sync::mpsc::channel::<LoadRequest>();
+        let (_done_tx, done_rx) = std::sync::mpsc::channel::<LoadResult>();
+        let mut app = App::new(
+            AppStart {
+                images,
+                image_dir: current,
+                state: AppState::Browser,
+                selected: 0,
+            },
+            tx,
+            done_rx,
+            Lang::Zh,
+            Picker::halfblocks(),
+        );
+        app.browser_focus = BrowserFocus::Context;
+        app.context_dir = app.image_dir.clone();
+        app.context_selected = 1;
+        app.scroll_row = 3;
+        app.protocol_cache.insert(0, make_protocol());
+        app.requested.insert((
+            app.directory_generation,
+            0,
+            LoadSize::Thumbnail { w: 1, h: 1 },
+        ));
+        let generation = app.directory_generation;
+
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE);
+
+        assert_eq!(app.image_dir, child);
+        assert_eq!(app.images.len(), 1);
+        assert_eq!(app.images[0].filename, "new.png");
+        assert_eq!(app.selected, 0);
+        assert_eq!(app.scroll_row, 0);
+        assert_eq!(app.context_selected, 0);
+        assert_eq!(app.context_scroll, 0);
+        assert!(app.protocol_cache.is_empty());
+        assert!(app.requested.is_empty());
+        assert!(app.directory_generation > generation);
+    }
+
+    #[test]
+    fn context_right_enters_selected_directory() {
+        let dir = tempdir().unwrap();
+        let current = dir.path().join("current");
+        let child = current.join("child");
+        fs::create_dir(&current).unwrap();
+        fs::create_dir(&child).unwrap();
+
+        let mut app = make_app(0);
+        app.image_dir = current.clone();
+        app.context_dir = current;
+        app.reset_context_selection_to_current_folder();
+        app.browser_focus = BrowserFocus::Context;
+        app.context_selected = 1;
+
+        app.handle_key(KeyCode::Right, KeyModifiers::NONE);
+
+        assert_eq!(app.image_dir, child);
+    }
+
+    #[test]
+    fn context_left_returns_to_parent_directory() {
+        let dir = tempdir().unwrap();
+        let parent = dir.path().join("parent");
+        let current = parent.join("current");
+        fs::create_dir(&parent).unwrap();
+        fs::create_dir(&current).unwrap();
+
+        let mut app = make_app(0);
+        app.image_dir = current.clone();
+        app.context_dir = current;
+        app.browser_focus = BrowserFocus::Context;
+
+        app.handle_key(KeyCode::Left, KeyModifiers::NONE);
+
+        assert_eq!(app.image_dir, parent);
+    }
+
+    #[test]
+    fn context_can_enter_child_after_returning_to_parent() {
+        let dir = tempdir().unwrap();
+        let parent = dir.path().join("parent");
+        let child = parent.join("child");
+        fs::create_dir(&parent).unwrap();
+        fs::create_dir(&child).unwrap();
+
+        let mut app = make_app(0);
+        app.image_dir = child.clone();
+        app.context_dir = browser_context_parent(child.as_path()).unwrap();
+        app.browser_focus = BrowserFocus::Context;
+
+        app.handle_key(KeyCode::Left, KeyModifiers::NONE);
+        assert_eq!(app.image_dir, parent);
+        let entries = app.directory_context_for_browser();
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0].path, parent);
+        assert_eq!(entries[1].path, child);
+
+        app.handle_key(KeyCode::Right, KeyModifiers::NONE);
+        assert_eq!(app.image_dir, entries[1].path);
+    }
+
+    #[test]
+    fn entering_directory_resets_search_state() {
+        let dir = tempdir().unwrap();
+        let root = dir.path().join("root");
+        let child = root.join("child");
+        fs::create_dir(&root).unwrap();
+        fs::create_dir(&child).unwrap();
+        write_png(&child.join("new.png"));
+
+        let mut app = make_app(0);
+        app.image_dir = root.clone();
+        app.context_dir = root;
+        app.search = Some(SearchState::new(0, '/'));
+
+        app.enter_directory(child);
+
+        assert!(app.search.is_none());
+        assert_eq!(app.images.len(), 1);
+    }
+
+    #[test]
+    fn context_enter_allows_empty_image_directory() {
+        let dir = tempdir().unwrap();
+        let root = dir.path().join("root");
+        let empty = root.join("empty");
+        fs::create_dir(&root).unwrap();
+        fs::create_dir(&empty).unwrap();
+        write_png(&root.join("old.png"));
+
+        let mut app = make_app(0);
+        app.image_dir = root.clone();
+        app.context_dir = root;
+        app.images = scan_directory(&app.image_dir).unwrap();
+        app.browser_focus = BrowserFocus::Context;
+        app.context_selected = 1;
+
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE);
+        assert_eq!(app.image_dir, empty);
+        assert!(app.images.is_empty());
+
+        app.browser_focus = BrowserFocus::Gallery;
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE);
+        assert_eq!(app.state, AppState::Browser);
+    }
+
+    #[test]
+    fn failed_directory_scan_keeps_current_directory_and_images() {
+        let dir = tempdir().unwrap();
+        write_png(&dir.path().join("old.png"));
+        let old_images = scan_directory(dir.path()).unwrap();
+
+        let mut app = make_app(0);
+        app.image_dir = dir.path().to_path_buf();
+        app.context_dir = dir.path().to_path_buf();
+        app.images = old_images;
+        app.enter_directory(dir.path().join("missing"));
+
+        assert_eq!(app.image_dir, dir.path());
+        assert_eq!(app.images.len(), 1);
+        assert!(app.browser_status_message().is_some());
+    }
+
+    #[test]
+    fn stale_load_results_are_discarded() {
+        let (mut app, done_tx) = make_app_with_load_done(1);
+        let generation = app.directory_generation;
+
+        done_tx
+            .send(LoadResult {
+                idx: 0,
+                path: PathBuf::from("img000.png"),
+                size: LoadSize::Thumbnail { w: 1, h: 1 },
+                generation: generation.wrapping_add(1),
+                content: LoadContent::Thumbnail(make_protocol()),
+                dims: Some((1, 1)),
+            })
+            .unwrap();
+        app.collect_loads();
+        assert!(app.protocol_cache.is_empty());
+
+        done_tx
+            .send(LoadResult {
+                idx: 0,
+                path: PathBuf::from("other.png"),
+                size: LoadSize::Thumbnail { w: 1, h: 1 },
+                generation,
+                content: LoadContent::Thumbnail(make_protocol()),
+                dims: Some((1, 1)),
+            })
+            .unwrap();
+        app.collect_loads();
+        assert!(app.protocol_cache.is_empty());
     }
 
     // ---- Search tests ----
