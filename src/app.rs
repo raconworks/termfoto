@@ -1,11 +1,11 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::fs::File;
 use std::io::BufReader;
 use std::num::NonZeroUsize;
 use std::path::{Path, PathBuf};
 use std::sync::{
     mpsc::{Receiver, Sender},
-    Arc,
+    Arc, Mutex,
 };
 use std::time::{Duration, Instant};
 
@@ -57,6 +57,104 @@ pub struct LoadResult {
 enum LoadContent {
     Thumbnail(Protocol),
     Original(FullscreenContent),
+    Skipped,
+}
+
+#[derive(Clone)]
+pub struct LoadControl {
+    inner: Arc<Mutex<LoadControlState>>,
+}
+
+#[derive(Default)]
+struct LoadControlState {
+    generation: u64,
+    thumbnail_interest: Option<ThumbnailInterest>,
+    original_interest: HashSet<usize>,
+}
+
+struct ThumbnailInterest {
+    w: u16,
+    h: u16,
+    slots: HashSet<usize>,
+}
+
+impl LoadControl {
+    pub fn new() -> Self {
+        Self {
+            inner: Arc::new(Mutex::new(LoadControlState::default())),
+        }
+    }
+
+    fn set_generation(&self, generation: u64) {
+        let mut state = self.inner.lock().unwrap();
+        state.generation = generation;
+        state.thumbnail_interest = None;
+        state.original_interest.clear();
+    }
+
+    fn update_thumbnail_interest<I>(&self, generation: u64, w: u16, h: u16, slots: I)
+    where
+        I: IntoIterator<Item = usize>,
+    {
+        let mut state = self.inner.lock().unwrap();
+        ensure_load_generation(&mut state, generation);
+        state.thumbnail_interest = Some(ThumbnailInterest {
+            w,
+            h,
+            slots: slots.into_iter().collect(),
+        });
+    }
+
+    fn clear_thumbnail_interest(&self, generation: u64) {
+        let mut state = self.inner.lock().unwrap();
+        ensure_load_generation(&mut state, generation);
+        state.thumbnail_interest = None;
+    }
+
+    fn update_original_interest<I>(&self, generation: u64, slots: I)
+    where
+        I: IntoIterator<Item = usize>,
+    {
+        let mut state = self.inner.lock().unwrap();
+        ensure_load_generation(&mut state, generation);
+        state.original_interest = slots.into_iter().collect();
+    }
+
+    fn clear_original_interest(&self, generation: u64) {
+        let mut state = self.inner.lock().unwrap();
+        ensure_load_generation(&mut state, generation);
+        state.original_interest.clear();
+    }
+
+    fn allows(&self, req: &LoadRequest) -> bool {
+        let state = self.inner.lock().unwrap();
+        if req.generation != state.generation {
+            return false;
+        }
+
+        match &req.size {
+            LoadSize::Thumbnail { w, h } => {
+                state.thumbnail_interest.as_ref().is_some_and(|interest| {
+                    interest.w == *w && interest.h == *h && interest.slots.contains(&req.idx)
+                })
+            }
+            LoadSize::Original => state.original_interest.contains(&req.idx),
+        }
+    }
+}
+
+impl Default for LoadControl {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+fn ensure_load_generation(state: &mut LoadControlState, generation: u64) {
+    if state.generation != generation {
+        state.generation = generation;
+        state.thumbnail_interest = None;
+        state.original_interest.clear();
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -101,7 +199,7 @@ pub struct App {
     pub context_scroll: usize,
     context_visible_rows: usize,
     pub directory_generation: u64,
-    pub protocol_cache: HashMap<usize, Protocol>,
+    pub protocol_cache: LruCache<usize, Protocol>,
     pub fullscreen_content: Option<FullscreenContent>,
     fullscreen_frame_idx: usize,
     fullscreen_next_frame_at: Option<Instant>,
@@ -134,6 +232,7 @@ pub struct App {
     pub lang: Lang,
     load_tx: Sender<LoadRequest>,
     load_rx: Receiver<LoadResult>,
+    load_control: LoadControl,
     status_message: Option<(String, Instant)>,
 }
 
@@ -343,12 +442,24 @@ fn max_pan_cells(display_px: f64, viewport_px: u32, font_px: u16) -> i16 {
 }
 
 impl App {
+    #[cfg(test)]
     pub fn new(
         start: AppStart,
         load_tx: Sender<LoadRequest>,
         load_rx: Receiver<LoadResult>,
         lang: Lang,
         picker: Picker,
+    ) -> Self {
+        Self::new_with_load_control(start, load_tx, load_rx, lang, picker, LoadControl::new())
+    }
+
+    pub fn new_with_load_control(
+        start: AppStart,
+        load_tx: Sender<LoadRequest>,
+        load_rx: Receiver<LoadResult>,
+        lang: Lang,
+        picker: Picker,
+        load_control: LoadControl,
     ) -> Self {
         let AppStart {
             mut images,
@@ -365,6 +476,7 @@ impl App {
             .unwrap_or_else(|| selected.min(images.len().saturating_sub(1)));
         let fullscreen_pending = state == AppState::Fullscreen;
         let (render_tx, render_rx) = spawn_render_worker(picker.clone());
+        load_control.set_generation(0);
         let mut app = Self {
             state,
             images,
@@ -378,7 +490,7 @@ impl App {
             context_scroll: 0,
             context_visible_rows: 1,
             directory_generation: 0,
-            protocol_cache: HashMap::new(),
+            protocol_cache: LruCache::new(NonZeroUsize::new(MAX_CACHE_SIZE).unwrap()),
             fullscreen_content: None,
             fullscreen_frame_idx: 0,
             fullscreen_next_frame_at: None,
@@ -413,6 +525,7 @@ impl App {
             lang,
             load_tx,
             load_rx,
+            load_control,
             status_message: None,
         };
         app.reset_context_selection_to_current_folder();
@@ -565,6 +678,7 @@ impl App {
     }
 
     fn clear_directory_caches(&mut self) {
+        self.load_control.set_generation(self.directory_generation);
         self.clear_protocol_cache();
         self.reset_fullscreen_content();
         self.fullscreen_pending = false;
@@ -657,6 +771,8 @@ impl App {
         self.fullscreen_pending = false;
         self.render_dirty_reason = None;
         self.render_settle_deadline = None;
+        self.load_control
+            .clear_original_interest(self.directory_generation);
     }
 
     pub fn fullscreen_prev(&mut self) {
@@ -698,6 +814,7 @@ impl App {
     }
 
     fn prepare_fullscreen_selection(&mut self) {
+        self.update_fullscreen_original_interest();
         if self.show_cached_fullscreen_original(Instant::now()) {
             self.fullscreen_pending = self.current_fullscreen_protocol().is_none();
         } else {
@@ -705,6 +822,27 @@ impl App {
             self.request_load(self.selected, LoadSize::Original);
         }
         self.prefetch_fullscreen_neighbors();
+    }
+
+    fn update_fullscreen_original_interest(&self) {
+        self.load_control
+            .update_original_interest(self.directory_generation, self.fullscreen_interest_slots());
+    }
+
+    fn fullscreen_interest_slots(&self) -> Vec<usize> {
+        if self.images.is_empty() || self.selected >= self.images.len() {
+            return Vec::new();
+        }
+
+        let mut slots = Vec::with_capacity(3);
+        slots.push(self.selected);
+        if self.selected > 0 {
+            slots.push(self.selected - 1);
+        }
+        if self.selected + 1 < self.images.len() {
+            slots.push(self.selected + 1);
+        }
+        slots
     }
 
     fn show_cached_fullscreen_original(&mut self, now: Instant) -> bool {
@@ -853,6 +991,7 @@ impl App {
                 continue;
             }
             match content {
+                LoadContent::Skipped => continue,
                 LoadContent::Original(content) => match content {
                     FullscreenContent::Static(sc) => {
                         self.insert_fullscreen_original(idx, Arc::clone(&sc.original));
@@ -1122,20 +1261,7 @@ impl App {
     }
 
     fn insert_cache(&mut self, idx: usize, proto: Protocol) {
-        self.protocol_cache.insert(idx, proto);
-        if self.protocol_cache.len() > MAX_CACHE_SIZE {
-            // Evict the oldest MAX_CACHE_SIZE/2 entries (HashMap preserves insertion order)
-            let remove_count = MAX_CACHE_SIZE / 2;
-            let stale: Vec<usize> = self
-                .protocol_cache
-                .keys()
-                .take(remove_count)
-                .copied()
-                .collect();
-            for k in stale {
-                self.protocol_cache.remove(&k);
-            }
-        }
+        self.protocol_cache.put(idx, proto);
     }
 
     pub fn request_load(&mut self, idx: usize, size: LoadSize) {
@@ -1162,6 +1288,21 @@ impl App {
         self.protocol_cache.clear();
         self.requested.clear();
         self.cache_width = 0;
+        self.load_control
+            .clear_thumbnail_interest(self.directory_generation);
+    }
+
+    pub(crate) fn update_thumbnail_interest<I>(&self, w: u16, h: u16, slots: I)
+    where
+        I: IntoIterator<Item = usize>,
+    {
+        self.load_control
+            .update_thumbnail_interest(self.directory_generation, w, h, slots);
+    }
+
+    pub(crate) fn clear_thumbnail_interest(&self) {
+        self.load_control
+            .clear_thumbnail_interest(self.directory_generation);
     }
 
     /// Handle a key event. Returns true if the app should quit.
@@ -1679,6 +1820,7 @@ fn integer_source_rect(
 pub fn spawn_image_loader(
     picker: Picker,
     _paths: Vec<std::path::PathBuf>,
+    load_control: LoadControl,
 ) -> (Sender<LoadRequest>, Receiver<LoadResult>) {
     let (load_tx, load_rx) = std::sync::mpsc::channel::<LoadRequest>();
     let (done_tx, done_rx) = std::sync::mpsc::channel::<LoadResult>();
@@ -1698,8 +1840,14 @@ pub fn spawn_image_loader(
         }
     });
 
-    spawn_loader_workers(picker.clone(), done_tx.clone(), thumb_rx, 3);
-    spawn_loader_workers(picker, done_tx, original_rx, 1);
+    spawn_loader_workers(
+        picker.clone(),
+        done_tx.clone(),
+        thumb_rx,
+        load_control.clone(),
+        3,
+    );
+    spawn_loader_workers(picker, done_tx, original_rx, load_control, 1);
 
     (load_tx, done_rx)
 }
@@ -1708,6 +1856,7 @@ fn spawn_loader_workers(
     picker: Picker,
     done_tx: Sender<LoadResult>,
     load_rx: Receiver<LoadRequest>,
+    load_control: LoadControl,
     workers: usize,
 ) {
     let rx = Arc::new(std::sync::Mutex::new(load_rx));
@@ -1715,6 +1864,7 @@ fn spawn_loader_workers(
         let picker = picker.clone();
         let done_tx = done_tx.clone();
         let rx = Arc::clone(&rx);
+        let load_control = load_control.clone();
 
         std::thread::spawn(move || loop {
             let req = {
@@ -1725,10 +1875,40 @@ fn spawn_loader_workers(
                 }
             };
 
-            if let Some(result) = process_load_request(&picker, req) {
+            if let Some(result) = process_load_request_with_control(&picker, &load_control, req) {
                 let _ = done_tx.send(result);
             }
         });
+    }
+}
+
+fn process_load_request_with_control(
+    picker: &Picker,
+    load_control: &LoadControl,
+    req: LoadRequest,
+) -> Option<LoadResult> {
+    if !load_control.allows(&req) {
+        return Some(skipped_load_result(req));
+    }
+
+    process_load_request(picker, req)
+}
+
+fn skipped_load_result(req: LoadRequest) -> LoadResult {
+    let LoadRequest {
+        idx,
+        path,
+        size,
+        generation,
+    } = req;
+
+    LoadResult {
+        idx,
+        path,
+        size,
+        generation,
+        content: LoadContent::Skipped,
+        dims: None,
     }
 }
 
@@ -1963,6 +2143,23 @@ mod tests {
         .unwrap();
     }
 
+    fn missing_load_request(idx: usize, size: LoadSize, generation: u64) -> LoadRequest {
+        LoadRequest {
+            idx,
+            path: PathBuf::from("missing.png"),
+            size,
+            generation,
+        }
+    }
+
+    fn assert_skipped(result: LoadResult, idx: usize, size: LoadSize, generation: u64) {
+        assert_eq!(result.idx, idx);
+        assert_eq!(result.size, size);
+        assert_eq!(result.generation, generation);
+        assert!(matches!(result.content, LoadContent::Skipped));
+        assert!(result.dims.is_none());
+    }
+
     #[test]
     fn sort_mode_defaults_to_name_order() {
         let app = make_app_with_entries(vec![
@@ -2034,7 +2231,7 @@ mod tests {
         app.visible_rows = 1;
         app.selected = 0;
         app.scroll_row = 0;
-        app.protocol_cache.insert(0, make_protocol());
+        app.protocol_cache.put(0, make_protocol());
         app.requested.insert((
             app.directory_generation,
             0,
@@ -2462,7 +2659,110 @@ mod tests {
         match result.content {
             LoadContent::Thumbnail(protocol) => assert!(protocol.size().width <= 8),
             LoadContent::Original(_) => panic!("expected thumbnail protocol"),
+            LoadContent::Skipped => panic!("expected thumbnail protocol"),
         }
+    }
+
+    #[test]
+    fn load_control_skips_stale_generation_without_decoding() {
+        let picker = Picker::halfblocks();
+        let control = LoadControl::new();
+        control.set_generation(2);
+        let thumb_size = LoadSize::Thumbnail { w: 8, h: 4 };
+
+        let thumb = process_load_request_with_control(
+            &picker,
+            &control,
+            missing_load_request(0, thumb_size.clone(), 1),
+        )
+        .unwrap();
+        let original = process_load_request_with_control(
+            &picker,
+            &control,
+            missing_load_request(0, LoadSize::Original, 1),
+        )
+        .unwrap();
+
+        assert_skipped(thumb, 0, thumb_size, 1);
+        assert_skipped(original, 0, LoadSize::Original, 1);
+    }
+
+    #[test]
+    fn load_control_skips_thumbnail_outside_interest() {
+        let picker = Picker::halfblocks();
+        let control = LoadControl::new();
+        let size = LoadSize::Thumbnail { w: 8, h: 4 };
+        control.update_thumbnail_interest(0, 8, 4, [1, 2, 3]);
+
+        let result = process_load_request_with_control(
+            &picker,
+            &control,
+            missing_load_request(0, size.clone(), 0),
+        )
+        .unwrap();
+
+        assert_skipped(result, 0, size, 0);
+    }
+
+    #[test]
+    fn load_control_skips_stale_thumbnail_size() {
+        let picker = Picker::halfblocks();
+        let control = LoadControl::new();
+        let size = LoadSize::Thumbnail { w: 7, h: 4 };
+        control.update_thumbnail_interest(0, 8, 4, [0]);
+
+        let result = process_load_request_with_control(
+            &picker,
+            &control,
+            missing_load_request(0, size.clone(), 0),
+        )
+        .unwrap();
+
+        assert_skipped(result, 0, size, 0);
+    }
+
+    #[test]
+    fn load_control_skips_original_outside_current_neighbors() {
+        let picker = Picker::halfblocks();
+        let control = LoadControl::new();
+        control.update_original_interest(0, [4, 5, 6]);
+
+        let result = process_load_request_with_control(
+            &picker,
+            &control,
+            missing_load_request(2, LoadSize::Original, 0),
+        )
+        .unwrap();
+
+        assert_skipped(result, 2, LoadSize::Original, 0);
+    }
+
+    #[test]
+    fn load_control_allows_current_original_request() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("current.png");
+        write_png(&path);
+        let picker = Picker::halfblocks();
+        let control = LoadControl::new();
+        control.update_original_interest(0, [4, 5, 6]);
+
+        let result = process_load_request_with_control(
+            &picker,
+            &control,
+            LoadRequest {
+                idx: 5,
+                path: path.clone(),
+                size: LoadSize::Original,
+                generation: 0,
+            },
+        )
+        .unwrap();
+
+        assert_eq!(result.idx, 5);
+        assert_eq!(result.path, path);
+        assert_eq!(result.size, LoadSize::Original);
+        assert_eq!(result.generation, 0);
+        assert!(matches!(result.content, LoadContent::Original(_)));
     }
 
     #[test]
@@ -2756,6 +3056,84 @@ mod tests {
     }
 
     #[test]
+    fn thumbnail_lru_evicts_least_recently_used_entry() {
+        let mut app = make_app(MAX_CACHE_SIZE + 1);
+        for idx in 0..MAX_CACHE_SIZE {
+            app.insert_cache(idx, make_protocol());
+        }
+
+        app.insert_cache(MAX_CACHE_SIZE, make_protocol());
+
+        assert_eq!(app.protocol_cache.len(), MAX_CACHE_SIZE);
+        assert!(!app.protocol_cache.contains(&0));
+        assert!(app.protocol_cache.contains(&MAX_CACHE_SIZE));
+    }
+
+    #[test]
+    fn thumbnail_lru_touch_keeps_visible_cache_entry() {
+        let mut app = make_app(MAX_CACHE_SIZE + 1);
+        for idx in 0..MAX_CACHE_SIZE {
+            app.insert_cache(idx, make_protocol());
+        }
+        app.grid_cols = 1;
+        app.visible_rows = 1;
+        app.scroll_row = 0;
+        app.cache_width = 80;
+        app.cache_height = 24;
+
+        crate::ui::browser::populate_protocol_cache(&mut app, 6, 6, Size::new(80, 24));
+        app.insert_cache(MAX_CACHE_SIZE, make_protocol());
+
+        assert_eq!(app.protocol_cache.len(), MAX_CACHE_SIZE);
+        assert!(app.protocol_cache.contains(&0));
+        assert!(!app.protocol_cache.contains(&2));
+    }
+
+    #[test]
+    fn skipped_load_results_clear_requested_and_allow_rerequest() {
+        let images = vec![ImageEntry {
+            path: PathBuf::from("img000.png"),
+            filename: "img000.png".to_string(),
+            file_size: 0,
+            modified_at: None,
+        }];
+        let (load_tx, load_rx) = std::sync::mpsc::channel::<LoadRequest>();
+        let (done_tx, done_rx) = std::sync::mpsc::channel::<LoadResult>();
+        let mut app = App::new(
+            AppStart {
+                images,
+                image_dir: PathBuf::from("."),
+                state: AppState::Browser,
+                selected: 0,
+            },
+            load_tx,
+            done_rx,
+            Lang::Zh,
+            Picker::halfblocks(),
+        );
+        let size = LoadSize::Thumbnail { w: 1, h: 1 };
+        let key = (app.directory_generation, 0, size.clone());
+        app.requested.insert(key.clone());
+
+        done_tx
+            .send(LoadResult {
+                idx: 0,
+                path: PathBuf::from("img000.png"),
+                size: size.clone(),
+                generation: app.directory_generation,
+                content: LoadContent::Skipped,
+                dims: None,
+            })
+            .unwrap();
+        app.collect_loads();
+        app.request_load(0, size.clone());
+
+        assert!(!app.requested.is_empty());
+        assert!(!app.protocol_cache.contains(&0));
+        assert_eq!(load_rx.try_recv().unwrap().size, size);
+    }
+
+    #[test]
     fn tab_and_backtab_toggle_browser_focus() {
         let mut app = make_app(1);
 
@@ -2855,7 +3233,7 @@ mod tests {
         app.context_dir = app.image_dir.clone();
         app.context_selected = 1;
         app.scroll_row = 3;
-        app.protocol_cache.insert(0, make_protocol());
+        app.protocol_cache.put(0, make_protocol());
         app.requested.insert((
             app.directory_generation,
             0,

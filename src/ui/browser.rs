@@ -5,6 +5,7 @@ use crate::ui::{
     render_directory_context, render_info_panel, render_panel, render_prompt_base,
     render_prompt_lines,
 };
+use lru::LruCache;
 use ratatui::{
     buffer::Buffer,
     layout::Rect,
@@ -188,7 +189,7 @@ fn render_browser_cell(
     area: Rect,
     buf: &mut Buffer,
     meta: &CellMeta,
-    cache: &std::collections::HashMap<usize, Protocol>,
+    cache: &LruCache<usize, Protocol>,
 ) {
     let border_style = if meta.selected {
         // Both selected and search match: bright yellow
@@ -236,7 +237,7 @@ fn render_browser_cell(
     };
 
     // Render chafa thumbnail centered
-    if let Some(proto) = cache.get(&meta.slot) {
+    if let Some(proto) = cache.peek(&meta.slot) {
         let proto_size = proto.size();
         let offset_x = thumb_area.width.saturating_sub(proto_size.width) / 2;
         let offset_y = thumb_area.height.saturating_sub(proto_size.height) / 2;
@@ -335,6 +336,7 @@ pub fn populate_protocol_cache(
     term_size: ratatui::layout::Size,
 ) {
     if cell_w < 2 || cell_h < 2 {
+        app.clear_thumbnail_interest();
         return;
     }
 
@@ -357,8 +359,12 @@ pub fn populate_protocol_cache(
     let start = app.scroll_row * app.grid_cols;
     let visible_end = (start + app.visible_rows * app.grid_cols).min(app.images.len());
 
-    for slot in thumbnail_request_order(start, visible_end, app.grid_cols, app.images.len()) {
-        if app.protocol_cache.contains_key(&slot)
+    let request_order =
+        thumbnail_request_order(start, visible_end, app.grid_cols, app.images.len());
+    app.update_thumbnail_interest(thumb_w, thumb_h, request_order.iter().copied());
+
+    for slot in request_order {
+        if app.protocol_cache.get(&slot).is_some()
             || app
                 .requested
                 .contains(&(app.directory_generation, slot, size.clone()))

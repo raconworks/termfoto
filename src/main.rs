@@ -37,7 +37,7 @@ use crossterm::{
 use ratatui::{backend::CrosstermBackend, Terminal};
 use ratatui_image::picker::Picker;
 
-use app::{spawn_image_loader, App, AppStart, AppState, MIN_CELL};
+use app::{spawn_image_loader, App, AppStart, AppState, LoadControl, MIN_CELL};
 use lang::Lang;
 use scanner::scan_directory;
 use ui::browser::populate_protocol_cache;
@@ -129,9 +129,10 @@ fn run(
 
     // Spawn background image loader: opens images + creates chafa Protocols
     let paths: Vec<PathBuf> = images.iter().map(|e| e.path.clone()).collect();
-    let (load_tx, load_rx) = spawn_image_loader(picker.clone(), paths);
+    let load_control = LoadControl::new();
+    let (load_tx, load_rx) = spawn_image_loader(picker.clone(), paths, load_control.clone());
 
-    let mut app = App::new(
+    let mut app = App::new_with_load_control(
         AppStart {
             images,
             image_dir,
@@ -142,6 +143,7 @@ fn run(
         load_rx,
         Lang::detect(),
         picker.clone(),
+        load_control,
     );
 
     loop {
