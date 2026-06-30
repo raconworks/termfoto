@@ -18,8 +18,9 @@ use ratatui_image::{
     picker::Picker, protocol::Protocol, FilterType as ProtocolFilterType, FontSize, Resize,
 };
 
+use crate::favorites::FavoriteStore;
 use crate::lang::Lang;
-use crate::scanner::{scan_directory, ImageEntry};
+use crate::scanner::{image_entry_from_path, scan_directory, ImageEntry};
 use crate::ui::search::{SearchAction, SearchState};
 
 const MAX_ANIMATION_FRAMES: usize = 120;
@@ -169,6 +170,12 @@ pub enum BrowserFocus {
     Context,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GalleryMode {
+    Directory,
+    Favorites,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct RenameState {
     pub original_path: PathBuf,
@@ -234,7 +241,9 @@ impl ImageSortMode {
 pub struct App {
     pub state: AppState,
     pub images: Vec<ImageEntry>,
+    directory_images: Vec<ImageEntry>,
     pub sort_mode: ImageSortMode,
+    pub gallery_mode: GalleryMode,
     pub image_dir: PathBuf,
     pub(crate) context_dir: PathBuf,
     pub selected: usize,
@@ -253,6 +262,7 @@ pub struct App {
     pub cache_width: u16,
     pub cache_height: u16,
     pub grid_cols: usize,
+    favorite_row_len: usize,
     pub thumb_w: u16,
     pub thumb_h: u16,
     pub visible_rows: usize,
@@ -280,6 +290,8 @@ pub struct App {
     load_rx: Receiver<LoadResult>,
     load_control: LoadControl,
     status_message: Option<(String, Instant)>,
+    favorites: FavoriteStore,
+    directory_selected_path: Option<PathBuf>,
 }
 
 pub struct AppStart {
@@ -508,28 +520,27 @@ impl App {
         load_control: LoadControl,
     ) -> Self {
         let AppStart {
-            mut images,
+            images,
             image_dir,
             state,
             selected,
         } = start;
         let sort_mode = ImageSortMode::Name;
         let selected_path = images.get(selected).map(|entry| entry.path.clone());
-        sort_image_entries(&mut images, sort_mode);
-        let selected = selected_path
-            .as_ref()
-            .and_then(|path| images.iter().position(|entry| &entry.path == path))
-            .unwrap_or_else(|| selected.min(images.len().saturating_sub(1)));
+        let mut directory_images = images;
+        sort_image_entries(&mut directory_images, sort_mode);
         let fullscreen_pending = state == AppState::Fullscreen;
         let (render_tx, render_rx) = spawn_render_worker(picker.clone());
         load_control.set_generation(0);
         let mut app = Self {
             state,
-            images,
+            images: Vec::new(),
+            directory_images,
             sort_mode,
+            gallery_mode: GalleryMode::Directory,
             context_dir: image_dir.clone(),
             image_dir,
-            selected,
+            selected: 0,
             scroll_row: 0,
             browser_focus: BrowserFocus::Gallery,
             context_selected: 0,
@@ -545,6 +556,7 @@ impl App {
             cache_width: 0,
             cache_height: 0,
             grid_cols: 8,
+            favorite_row_len: 0,
             thumb_w: 0,
             thumb_h: 0,
             visible_rows: 1,
@@ -574,7 +586,15 @@ impl App {
             load_rx,
             load_control,
             status_message: None,
+            favorites: FavoriteStore::load_default(),
+            directory_selected_path: None,
         };
+        app.rebuild_directory_gallery(selected_path.clone());
+        if app.images.is_empty() {
+            app.selected = 0;
+        } else if selected_path.is_none() {
+            app.selected = selected.min(app.images.len().saturating_sub(1));
+        }
         app.reset_context_selection_to_current_folder();
         // If launched directly into fullscreen (e.g. "termfoto image.png"),
         // immediately request the original load so the image appears.
@@ -582,6 +602,20 @@ impl App {
             app.prepare_fullscreen_selection();
         }
         app
+    }
+
+    #[cfg(test)]
+    pub fn set_favorite_store_path_for_tests(&mut self, path: PathBuf) {
+        self.favorites = FavoriteStore::empty_at(path);
+        let selected_path = self.current_selected_path();
+        self.rebuild_active_gallery(selected_path);
+    }
+
+    #[cfg(test)]
+    pub fn add_favorite_for_tests(&mut self, path: &Path, added_at_ms: u64) {
+        self.favorites.add_at(path, added_at_ms).unwrap();
+        let selected_path = self.current_selected_path();
+        self.rebuild_active_gallery(selected_path);
     }
 
     pub fn sort_label(&self) -> &'static str {
@@ -595,24 +629,170 @@ impl App {
         }
     }
 
+    pub fn set_grid_layout(&mut self, grid_cols: usize, visible_rows: usize) {
+        let grid_cols = grid_cols.max(1);
+        let previous_cols = self.grid_cols;
+        self.grid_cols = grid_cols;
+        self.visible_rows = visible_rows.max(1);
+        if previous_cols != grid_cols && self.gallery_mode == GalleryMode::Directory {
+            let selected_path = self.current_selected_path();
+            let old_images = active_path_keys(&self.images);
+            self.rebuild_directory_gallery(selected_path);
+            if old_images != active_path_keys(&self.images) {
+                self.invalidate_active_gallery();
+            }
+        }
+    }
+
+    pub fn is_favorites_view(&self) -> bool {
+        self.gallery_mode == GalleryMode::Favorites
+    }
+
+    pub fn favorite_row_len(&self) -> usize {
+        if self.gallery_mode == GalleryMode::Directory {
+            self.favorite_row_len
+        } else {
+            0
+        }
+    }
+
+    pub fn has_favorite_row(&self) -> bool {
+        self.favorite_row_len() > 0
+    }
+
+    pub fn normal_visible_rows(&self, visible_rows: usize) -> usize {
+        if self.has_favorite_row() {
+            visible_rows.saturating_sub(1)
+        } else {
+            visible_rows
+        }
+    }
+
+    pub fn is_favorite_index(&self, idx: usize) -> bool {
+        self.images
+            .get(idx)
+            .is_some_and(|entry| self.favorites.is_favorite(&entry.path))
+    }
+
+    fn current_selected_path(&self) -> Option<PathBuf> {
+        self.images
+            .get(self.selected)
+            .map(|entry| entry.path.clone())
+    }
+
+    fn rebuild_active_gallery(&mut self, selected_path: Option<PathBuf>) -> usize {
+        match self.gallery_mode {
+            GalleryMode::Directory => {
+                self.rebuild_directory_gallery(selected_path);
+                0
+            }
+            GalleryMode::Favorites => self.rebuild_favorites_gallery(selected_path),
+        }
+    }
+
+    fn rebuild_directory_gallery(&mut self, selected_path: Option<PathBuf>) {
+        let max_pinned = self.grid_cols.max(1);
+        let mut pinned = Vec::new();
+        let mut pinned_keys = HashSet::new();
+
+        for favorite in self.favorites.entries_newest_first() {
+            if pinned.len() >= max_pinned {
+                break;
+            }
+            let favorite_key = FavoriteStore::normalize_path(&favorite.path);
+            if let Some(entry) = self.directory_images.iter().find(|entry| {
+                FavoriteStore::normalize_path(&entry.path) == favorite_key
+                    && !pinned_keys.contains(&favorite_key)
+            }) {
+                pinned.push(entry.clone());
+                pinned_keys.insert(favorite_key);
+            }
+        }
+
+        let mut images = pinned;
+        images.extend(
+            self.directory_images
+                .iter()
+                .filter(|entry| !pinned_keys.contains(&FavoriteStore::normalize_path(&entry.path)))
+                .cloned(),
+        );
+
+        self.favorite_row_len = images.len().min(pinned_keys.len());
+        self.images = images;
+        self.select_path_or_clamp(selected_path.as_deref());
+    }
+
+    fn rebuild_favorites_gallery(&mut self, selected_path: Option<PathBuf>) -> usize {
+        let mut images = Vec::new();
+        let mut skipped = 0;
+        let mut seen = HashSet::new();
+
+        for favorite in self.favorites.entries_newest_first() {
+            let key = FavoriteStore::normalize_path(&favorite.path);
+            if !seen.insert(key) {
+                continue;
+            }
+            if let Some(entry) = image_entry_from_path(&favorite.path) {
+                images.push(entry);
+            } else {
+                skipped += 1;
+            }
+        }
+
+        self.favorite_row_len = 0;
+        self.images = images;
+        self.select_path_or_clamp(selected_path.as_deref());
+        skipped
+    }
+
+    fn select_path_or_clamp(&mut self, selected_path: Option<&Path>) {
+        if self.images.is_empty() {
+            self.selected = 0;
+            self.scroll_row = 0;
+            return;
+        }
+
+        if let Some(selected_path) = selected_path {
+            let selected_key = FavoriteStore::normalize_path(selected_path);
+            if let Some(idx) = self
+                .images
+                .iter()
+                .position(|entry| FavoriteStore::normalize_path(&entry.path) == selected_key)
+            {
+                self.selected = idx;
+                self.clamp_scroll(self.visible_rows.max(1));
+                return;
+            }
+        }
+
+        self.selected = self.selected.min(self.images.len().saturating_sub(1));
+        self.clamp_scroll(self.visible_rows.max(1));
+    }
+
+    fn invalidate_active_gallery(&mut self) {
+        self.directory_generation = self.directory_generation.wrapping_add(1);
+        self.clear_directory_caches();
+        if self.state == AppState::Fullscreen {
+            if self.images.is_empty() {
+                self.exit_fullscreen();
+            } else {
+                self.prepare_fullscreen_selection();
+            }
+        }
+    }
+
     pub fn cycle_sort_mode(&mut self) {
         self.sort_mode = self.sort_mode.next();
         self.sort_images_preserving_selection();
     }
 
     fn sort_images_preserving_selection(&mut self) {
-        let selected_path = self
-            .images
-            .get(self.selected)
-            .map(|entry| entry.path.clone());
-        sort_image_entries(&mut self.images, self.sort_mode);
-        self.selected = selected_path
-            .as_ref()
-            .and_then(|path| self.images.iter().position(|entry| &entry.path == path))
-            .unwrap_or(0);
-        self.clamp_scroll(self.visible_rows.max(1));
-        self.directory_generation = self.directory_generation.wrapping_add(1);
-        self.clear_directory_caches();
+        let selected_path = self.current_selected_path();
+        sort_image_entries(&mut self.directory_images, self.sort_mode);
+        if self.gallery_mode == GalleryMode::Directory {
+            self.rebuild_directory_gallery(selected_path);
+            self.invalidate_active_gallery();
+        }
     }
 
     pub fn directory_context_for_browser(&self) -> Vec<DirectoryContextEntry> {
@@ -708,7 +888,10 @@ impl App {
         self.context_dir = context_dir;
         let mut images = images;
         sort_image_entries(&mut images, self.sort_mode);
-        self.images = images;
+        self.directory_images = images;
+        self.gallery_mode = GalleryMode::Directory;
+        self.directory_selected_path = None;
+        self.rebuild_directory_gallery(None);
         self.selected = 0;
         self.scroll_row = 0;
         self.reset_context_selection_to_current_folder();
@@ -790,7 +973,7 @@ impl App {
                 KeyCode::Char('y') | KeyCode::Char('Y') => {
                     let target_path = rename.target_path();
                     match rename_over_existing(&rename.original_path, &target_path) {
-                        Ok(()) => self.finish_rename_success(target_path),
+                        Ok(()) => self.finish_rename_success(rename.original_path, target_path),
                         Err(err) => self.set_status_message(
                             self.lang.rename_failed(&err.to_string()).to_string(),
                         ),
@@ -857,7 +1040,7 @@ impl App {
 
         match fs::rename(&rename.original_path, &target_path) {
             Ok(()) => {
-                self.finish_rename_success(target_path);
+                self.finish_rename_success(rename.original_path, target_path);
                 None
             }
             Err(err) => {
@@ -867,38 +1050,43 @@ impl App {
         }
     }
 
-    fn finish_rename_success(&mut self, target_path: PathBuf) {
+    fn finish_rename_success(&mut self, original_path: PathBuf, target_path: PathBuf) {
         let target_name = target_path
             .file_name()
             .map(|name| name.to_string_lossy().into_owned())
             .unwrap_or_else(|| target_path.to_string_lossy().into_owned());
+        let favorite_update_error = if self.favorites.is_favorite(&original_path) {
+            self.favorites
+                .update_path(&original_path, &target_path)
+                .err()
+                .map(|err| err.to_string())
+        } else {
+            None
+        };
 
         self.search = None;
         self.rename = None;
-        self.directory_generation = self.directory_generation.wrapping_add(1);
-        self.clear_directory_caches();
 
-        let Ok(mut images) = scan_directory(&self.image_dir) else {
-            self.set_status_message(self.lang.directory_error().to_string());
-            return;
-        };
+        match scan_directory(&self.image_dir) {
+            Ok(mut images) => {
+                sort_image_entries(&mut images, self.sort_mode);
+                self.directory_images = images;
+            }
+            Err(_) if self.gallery_mode == GalleryMode::Directory => {
+                self.set_status_message(self.lang.directory_error().to_string());
+                return;
+            }
+            Err(_) => {}
+        }
 
-        sort_image_entries(&mut images, self.sort_mode);
-        self.images = images;
-        self.selected = self
-            .images
-            .iter()
-            .position(|entry| entry.path == target_path)
-            .or_else(|| {
-                self.images
-                    .iter()
-                    .position(|entry| entry.filename == target_name)
-            })
-            .unwrap_or_else(|| self.selected.min(self.images.len().saturating_sub(1)));
-        self.clamp_scroll(self.visible_rows.max(1));
-        self.set_status_message(self.lang.rename_success(&target_name).to_string());
-        if self.state == AppState::Fullscreen && !self.images.is_empty() {
-            self.prepare_fullscreen_selection();
+        let skipped = self.rebuild_active_gallery(Some(target_path.clone()));
+        self.invalidate_active_gallery();
+        if let Some(error) = favorite_update_error {
+            self.set_status_message(self.lang.favorite_save_failed(&error));
+        } else if skipped > 0 {
+            self.set_status_message(self.lang.favorite_missing_skipped(skipped));
+        } else {
+            self.set_status_message(self.lang.rename_success(&target_name).to_string());
         }
     }
 
@@ -915,13 +1103,26 @@ impl App {
     }
 
     pub fn navigate_up(&mut self) {
-        self.selected = self.selected.saturating_sub(self.grid_cols);
+        let Some((row, col)) = self.visual_position(self.selected) else {
+            return;
+        };
+        if row == 0 {
+            if !self.has_favorite_row() {
+                self.selected = 0;
+            }
+            return;
+        }
+        if let Some(idx) = self.index_at_visual_position(row - 1, col) {
+            self.selected = idx;
+        }
     }
 
     pub fn navigate_down(&mut self) {
-        let next = self.selected + self.grid_cols;
-        if next < self.images.len() {
-            self.selected = next;
+        let Some((row, col)) = self.visual_position(self.selected) else {
+            return;
+        };
+        if let Some(idx) = self.index_at_visual_position(row + 1, col) {
+            self.selected = idx;
         }
     }
 
@@ -934,23 +1135,119 @@ impl App {
     }
 
     pub fn navigate_page_down(&mut self, visible_rows: usize) {
-        let step = visible_rows * self.grid_cols;
-        let next = (self.selected + step).min(self.images.len().saturating_sub(1));
-        self.selected = next;
+        let Some((row, col)) = self.visual_position(self.selected) else {
+            return;
+        };
+        let target_row = (row + visible_rows.max(1)).min(self.last_visual_row());
+        self.selected = self
+            .nearest_index_in_visual_row(target_row, col)
+            .unwrap_or_else(|| self.images.len().saturating_sub(1));
     }
 
     pub fn navigate_page_up(&mut self, visible_rows: usize) {
-        let step = visible_rows * self.grid_cols;
-        self.selected = self.selected.saturating_sub(step);
+        let Some((row, col)) = self.visual_position(self.selected) else {
+            return;
+        };
+        let target_row = row.saturating_sub(visible_rows.max(1));
+        if let Some(idx) = self.nearest_index_in_visual_row(target_row, col) {
+            self.selected = idx;
+        }
     }
 
     pub fn clamp_scroll(&mut self, visible_rows: usize) {
-        let selected_row = self.selected / self.grid_cols.max(1);
+        let grid_cols = self.grid_cols.max(1);
+        let favorite_row_len = self.favorite_row_len();
+        if favorite_row_len > 0 {
+            let normal_visible_rows = visible_rows.saturating_sub(1);
+            if self.selected < favorite_row_len || normal_visible_rows == 0 {
+                return;
+            }
+            let selected_row = (self.selected - favorite_row_len) / grid_cols;
+            if selected_row < self.scroll_row {
+                self.scroll_row = selected_row;
+            } else if selected_row >= self.scroll_row + normal_visible_rows {
+                self.scroll_row = selected_row + 1 - normal_visible_rows;
+            }
+            let normal_len = self.images.len().saturating_sub(favorite_row_len);
+            let normal_rows = normal_len.div_ceil(grid_cols);
+            self.scroll_row = self
+                .scroll_row
+                .min(normal_rows.saturating_sub(normal_visible_rows));
+            return;
+        }
+
+        let selected_row = self.selected / grid_cols;
         if selected_row < self.scroll_row {
             self.scroll_row = selected_row;
         } else if selected_row >= self.scroll_row + visible_rows {
             self.scroll_row = selected_row + 1 - visible_rows;
         }
+        let rows = self.images.len().div_ceil(grid_cols);
+        self.scroll_row = self.scroll_row.min(rows.saturating_sub(visible_rows));
+    }
+
+    fn visual_position(&self, idx: usize) -> Option<(usize, usize)> {
+        if idx >= self.images.len() {
+            return None;
+        }
+        let grid_cols = self.grid_cols.max(1);
+        let favorite_row_len = self.favorite_row_len();
+        if favorite_row_len > 0 {
+            if idx < favorite_row_len {
+                Some((0, idx))
+            } else {
+                let normal_idx = idx - favorite_row_len;
+                Some((1 + normal_idx / grid_cols, normal_idx % grid_cols))
+            }
+        } else {
+            Some((idx / grid_cols, idx % grid_cols))
+        }
+    }
+
+    fn index_at_visual_position(&self, row: usize, col: usize) -> Option<usize> {
+        let grid_cols = self.grid_cols.max(1);
+        if col >= grid_cols {
+            return None;
+        }
+        let favorite_row_len = self.favorite_row_len();
+        let idx = if favorite_row_len > 0 {
+            if row == 0 {
+                if col < favorite_row_len {
+                    col
+                } else {
+                    return None;
+                }
+            } else {
+                favorite_row_len + (row - 1) * grid_cols + col
+            }
+        } else {
+            row * grid_cols + col
+        };
+        (idx < self.images.len()).then_some(idx)
+    }
+
+    fn nearest_index_in_visual_row(&self, row: usize, preferred_col: usize) -> Option<usize> {
+        if let Some(idx) = self.index_at_visual_position(row, preferred_col) {
+            return Some(idx);
+        }
+        let grid_cols = self.grid_cols.max(1);
+        (0..grid_cols)
+            .rev()
+            .filter(|col| *col <= preferred_col)
+            .find_map(|col| self.index_at_visual_position(row, col))
+            .or_else(|| {
+                (preferred_col + 1..grid_cols)
+                    .find_map(|col| self.index_at_visual_position(row, col))
+            })
+    }
+
+    fn last_visual_row(&self) -> usize {
+        self.images
+            .len()
+            .checked_sub(1)
+            .and_then(|idx| self.visual_position(idx))
+            .map(|(row, _)| row)
+            .unwrap_or(0)
     }
 
     pub fn enter_fullscreen(&mut self) {
@@ -1514,6 +1811,94 @@ impl App {
             .clear_thumbnail_interest(self.directory_generation);
     }
 
+    fn toggle_favorite_current(&mut self) {
+        let Some(path) = self.current_selected_path() else {
+            self.set_status_message(self.lang.favorite_no_image().to_string());
+            return;
+        };
+
+        let was_favorite = self.favorites.is_favorite(&path);
+        let old_selected = self.selected;
+        let fallback_after_remove = if was_favorite && self.gallery_mode == GalleryMode::Favorites {
+            self.images
+                .get(old_selected + 1)
+                .or_else(|| {
+                    old_selected
+                        .checked_sub(1)
+                        .and_then(|idx| self.images.get(idx))
+                })
+                .map(|entry| entry.path.clone())
+        } else {
+            Some(path.clone())
+        };
+
+        let save_error = if was_favorite {
+            self.favorites
+                .remove(&path)
+                .err()
+                .map(|err| err.to_string())
+        } else {
+            self.favorites
+                .add_now(&path)
+                .err()
+                .map(|err| err.to_string())
+        };
+
+        let selected_path = if was_favorite {
+            fallback_after_remove
+        } else {
+            Some(path)
+        };
+        let skipped = self.rebuild_active_gallery(selected_path);
+        self.invalidate_active_gallery();
+
+        if let Some(error) = save_error {
+            self.set_status_message(self.lang.favorite_save_failed(&error));
+        } else if skipped > 0 {
+            self.set_status_message(self.lang.favorite_missing_skipped(skipped));
+        } else if was_favorite {
+            self.set_status_message(self.lang.favorite_removed().to_string());
+        } else {
+            self.set_status_message(self.lang.favorite_added().to_string());
+        }
+    }
+
+    fn toggle_favorites_view(&mut self) {
+        match self.gallery_mode {
+            GalleryMode::Directory => {
+                let current_path = self.current_selected_path();
+                self.directory_selected_path = current_path.clone();
+                self.gallery_mode = GalleryMode::Favorites;
+                self.selected = 0;
+                let skipped = self.rebuild_favorites_gallery(current_path);
+                self.invalidate_active_gallery();
+                if skipped > 0 {
+                    self.set_status_message(self.lang.favorite_missing_skipped(skipped));
+                } else if self.images.is_empty() {
+                    self.set_status_message(self.lang.favorite_none().to_string());
+                }
+            }
+            GalleryMode::Favorites => {
+                let current_path = self.current_selected_path();
+                let selected_path = current_path
+                    .filter(|path| self.directory_contains_path(path))
+                    .or_else(|| self.directory_selected_path.clone());
+                self.gallery_mode = GalleryMode::Directory;
+                self.directory_selected_path = None;
+                self.selected = 0;
+                self.rebuild_directory_gallery(selected_path);
+                self.invalidate_active_gallery();
+            }
+        }
+    }
+
+    fn directory_contains_path(&self, path: &Path) -> bool {
+        let key = FavoriteStore::normalize_path(path);
+        self.directory_images
+            .iter()
+            .any(|entry| FavoriteStore::normalize_path(&entry.path) == key)
+    }
+
     /// Handle a key event. Returns true if the app should quit.
     pub fn handle_key(&mut self, code: KeyCode, modifiers: KeyModifiers) -> bool {
         if self.rename.is_some() {
@@ -1534,6 +1919,8 @@ impl App {
                         self.lang.toggle();
                     }
                     KeyCode::Char('s') => self.cycle_sort_mode(),
+                    KeyCode::Char('f') => self.toggle_favorite_current(),
+                    KeyCode::Char('F') => self.toggle_favorites_view(),
                     KeyCode::Char('/') | KeyCode::Char('\\') => {
                         let trigger = match code {
                             KeyCode::Char(c) => c,
@@ -1584,6 +1971,8 @@ impl App {
                 KeyCode::Char('L') => {
                     self.lang.toggle();
                 }
+                KeyCode::Char('f') => self.toggle_favorite_current(),
+                KeyCode::Char('F') => self.toggle_favorites_view(),
                 KeyCode::Char('+') | KeyCode::Char('=') => self.zoom_in(),
                 KeyCode::Char('-') => self.zoom_out(),
                 KeyCode::Char('0') => self.zoom_reset(),
@@ -1799,6 +2188,13 @@ fn sort_image_entries(images: &mut [ImageEntry], sort_mode: ImageSortMode) {
             });
         }
     }
+}
+
+fn active_path_keys(images: &[ImageEntry]) -> Vec<PathBuf> {
+    images
+        .iter()
+        .map(|entry| FavoriteStore::normalize_path(&entry.path))
+        .collect()
 }
 
 fn rename_over_existing(source: &Path, target: &Path) -> io::Result<()> {
@@ -2453,6 +2849,10 @@ mod tests {
         assert_eq!(result.generation, generation);
         assert!(matches!(result.content, LoadContent::Skipped));
         assert!(result.dims.is_none());
+    }
+
+    fn isolate_favorites(app: &mut App, dir: &Path) {
+        app.set_favorite_store_path_for_tests(dir.join("favorites.tsv"));
     }
 
     #[test]
@@ -3727,6 +4127,175 @@ mod tests {
             .unwrap();
         app.collect_loads();
         assert!(app.protocol_cache.is_empty());
+    }
+
+    #[test]
+    fn favorite_toggle_works_in_browser_and_fullscreen_but_not_text_modes() {
+        let dir = tempdir().unwrap();
+        let mut app = make_app_with_names(&["sample.png"]);
+        isolate_favorites(&mut app, dir.path());
+
+        app.handle_key(KeyCode::Char('f'), KeyModifiers::NONE);
+        assert!(app.favorites.is_favorite(&app.images[0].path));
+
+        app.handle_key(KeyCode::Char('/'), KeyModifiers::NONE);
+        app.handle_key(KeyCode::Char('F'), KeyModifiers::NONE);
+        assert_eq!(app.search.as_ref().unwrap().query, "F");
+        assert_eq!(app.gallery_mode, GalleryMode::Directory);
+        app.handle_key(KeyCode::Esc, KeyModifiers::NONE);
+
+        app.handle_key(KeyCode::Char('r'), KeyModifiers::NONE);
+        app.handle_key(KeyCode::Char('f'), KeyModifiers::NONE);
+        assert!(app.rename.as_ref().unwrap().input.ends_with('f'));
+        assert!(app.favorites.is_favorite(&app.images[0].path));
+        app.handle_key(KeyCode::Esc, KeyModifiers::NONE);
+
+        app.enter_fullscreen();
+        app.handle_key(KeyCode::Char('f'), KeyModifiers::NONE);
+        assert!(!app.favorites.is_favorite(&app.images[0].path));
+    }
+
+    #[test]
+    fn directory_gallery_pins_current_directory_favorites_by_newest_first() {
+        let dir = tempdir().unwrap();
+        let images = vec![
+            ImageEntry {
+                path: dir.path().join("a.png"),
+                filename: "a.png".to_string(),
+                file_size: 0,
+                modified_at: None,
+            },
+            ImageEntry {
+                path: dir.path().join("b.png"),
+                filename: "b.png".to_string(),
+                file_size: 0,
+                modified_at: None,
+            },
+            ImageEntry {
+                path: dir.path().join("c.png"),
+                filename: "c.png".to_string(),
+                file_size: 0,
+                modified_at: None,
+            },
+            ImageEntry {
+                path: dir.path().join("d.png"),
+                filename: "d.png".to_string(),
+                file_size: 0,
+                modified_at: None,
+            },
+        ];
+        let mut app = make_app_with_entries(images);
+        app.set_grid_layout(2, 3);
+        isolate_favorites(&mut app, dir.path());
+        app.add_favorite_for_tests(&dir.path().join("d.png"), 10);
+        app.add_favorite_for_tests(&dir.path().join("a.png"), 20);
+        app.add_favorite_for_tests(&dir.path().join("c.png"), 30);
+
+        assert_eq!(app.favorite_row_len(), 2);
+        assert_eq!(image_names(&app), vec!["c.png", "a.png", "b.png", "d.png"]);
+
+        app.selected = 0;
+        app.navigate_down();
+        assert_eq!(app.images[app.selected].filename, "b.png");
+        app.navigate_up();
+        assert_eq!(app.images[app.selected].filename, "c.png");
+    }
+
+    #[test]
+    fn favorites_view_shows_all_existing_favorites_newest_first_and_toggles_back() {
+        let dir = tempdir().unwrap();
+        let other = tempdir().unwrap();
+        write_png(&dir.path().join("a.png"));
+        write_png(&dir.path().join("b.png"));
+        write_png(&other.path().join("c.png"));
+        let (mut app, _rx) = make_app_for_dir(dir.path(), 1, AppState::Browser);
+        isolate_favorites(&mut app, dir.path());
+        app.add_favorite_for_tests(&dir.path().join("a.png"), 20);
+        app.add_favorite_for_tests(&other.path().join("c.png"), 30);
+        app.selected = app
+            .images
+            .iter()
+            .position(|entry| entry.filename == "b.png")
+            .unwrap();
+
+        app.handle_key(KeyCode::Char('F'), KeyModifiers::NONE);
+
+        assert_eq!(app.gallery_mode, GalleryMode::Favorites);
+        assert_eq!(image_names(&app), vec!["c.png", "a.png"]);
+        assert_eq!(app.selected, 0);
+
+        app.handle_key(KeyCode::Char('F'), KeyModifiers::NONE);
+
+        assert_eq!(app.gallery_mode, GalleryMode::Directory);
+        assert_eq!(image_names(&app), vec!["a.png", "b.png"]);
+        assert_eq!(app.images[app.selected].filename, "b.png");
+    }
+
+    #[test]
+    fn unfavorite_in_favorites_view_removes_current_and_exits_empty_fullscreen() {
+        let dir = tempdir().unwrap();
+        write_png(&dir.path().join("a.png"));
+        write_png(&dir.path().join("b.png"));
+        let (mut app, _rx) = make_app_for_dir(dir.path(), 0, AppState::Browser);
+        isolate_favorites(&mut app, dir.path());
+        app.add_favorite_for_tests(&dir.path().join("a.png"), 10);
+        app.add_favorite_for_tests(&dir.path().join("b.png"), 20);
+        app.handle_key(KeyCode::Char('F'), KeyModifiers::NONE);
+        app.selected = 0;
+
+        app.handle_key(KeyCode::Char('f'), KeyModifiers::NONE);
+
+        assert_eq!(image_names(&app), vec!["a.png"]);
+        assert_eq!(app.selected, 0);
+        assert_eq!(app.images[app.selected].filename, "a.png");
+
+        app.enter_fullscreen();
+        app.handle_key(KeyCode::Char('f'), KeyModifiers::NONE);
+
+        assert_eq!(app.gallery_mode, GalleryMode::Favorites);
+        assert_eq!(app.state, AppState::Browser);
+        assert!(app.images.is_empty());
+    }
+
+    #[test]
+    fn favorite_changes_clear_active_gallery_caches_and_increment_generation() {
+        let dir = tempdir().unwrap();
+        let mut app = make_app(2);
+        isolate_favorites(&mut app, dir.path());
+        app.protocol_cache.put(0, make_protocol());
+        app.requested.insert((
+            app.directory_generation,
+            0,
+            LoadSize::Thumbnail { w: 1, h: 1 },
+        ));
+        app.insert_fullscreen_original(0, Arc::new(image::RgbaImage::new(1, 1)));
+        let generation = app.directory_generation;
+
+        app.handle_key(KeyCode::Char('f'), KeyModifiers::NONE);
+
+        assert!(app.directory_generation > generation);
+        assert!(app.protocol_cache.is_empty());
+        assert!(app.requested.is_empty());
+        assert!(app.fullscreen_original_cache.is_empty());
+    }
+
+    #[test]
+    fn rename_updates_favorite_path_and_preserves_added_time() {
+        let dir = tempdir().unwrap();
+        write_png(&dir.path().join("old.png"));
+        let (mut app, _rx) = make_app_for_dir(dir.path(), 0, AppState::Browser);
+        isolate_favorites(&mut app, dir.path());
+        app.add_favorite_for_tests(&dir.path().join("old.png"), 77);
+
+        app.handle_key(KeyCode::Char('r'), KeyModifiers::NONE);
+        set_rename_input(&mut app, "new");
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE);
+
+        let new_path = FavoriteStore::normalize_path(&dir.path().join("new.png"));
+        assert_eq!(app.favorites.entries().len(), 1);
+        assert_eq!(app.favorites.entries()[0].path, new_path);
+        assert_eq!(app.favorites.entries()[0].added_at_ms, 77);
+        assert_eq!(app.images[app.selected].filename, "new.png");
     }
 
     // ---- Rename tests ----

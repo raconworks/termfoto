@@ -65,7 +65,7 @@ impl Lang {
                     name, selected, total, sort_label
                 ),
                 " 导航     ←→↑↓ 导航   PgUp/PgDown/Space 翻页   Home/End 首尾".to_string(),
-                " 操作     Enter 全屏   Tab 切换面板   / 搜索   r 重命名   s 排列   L 切换语言   q 退出"
+                " 操作     Enter 全屏   Tab 切换面板   / 搜索   r 重命名   f 收藏   F 收藏视图   s 排列   L 切换语言   q 退出"
                     .to_string(),
             ],
             Lang::En => vec![
@@ -74,7 +74,24 @@ impl Lang {
                     name, selected, total, sort_label
                 ),
                 " Move     ←→↑↓ Nav   PgUp/PgDown/Space Page   Home/End First/Last".to_string(),
-                " Action   Enter View   Tab Focus   / Search   r Rename   s Sort   L Language   q Quit"
+                " Action   Enter View   Tab Focus   / Search   r Rename   f Favorite   F Favorites   s Sort   L Language   q Quit"
+                    .to_string(),
+            ],
+        }
+    }
+
+    pub fn favorites_prompt_lines(&self, name: &str, selected: usize, total: usize) -> Vec<String> {
+        match self {
+            Lang::Zh => vec![
+                format!(" 收藏视图 {} [{}/{}]", name, selected, total),
+                " 导航     ←→↑↓ 导航   PgUp/PgDown/Space 翻页   Home/End 首尾".to_string(),
+                " 操作     Enter 全屏   / 搜索   f 取消收藏   F 返回图库   L 切换语言   q 退出"
+                    .to_string(),
+            ],
+            Lang::En => vec![
+                format!(" Favorites {} [{}/{}]", name, selected, total),
+                " Move     ←→↑↓ Nav   PgUp/PgDown/Space Page   Home/End First/Last".to_string(),
+                " Action   Enter View   / Search   f Unfavorite   F Gallery   L Language   q Quit"
                     .to_string(),
             ],
         }
@@ -94,7 +111,7 @@ impl Lang {
                     name, selected, total, sort_label
                 ),
                 " 导航     ↑↓ 选择   Home/End 首尾   ← 上一级".to_string(),
-                " 操作     →/Enter 进入文件夹   Tab 切换面板   s 排列   L 切换语言   q 退出"
+                " 操作     →/Enter 进入文件夹   Tab 切换面板   f 收藏   F 收藏视图   s 排列   L 切换语言   q 退出"
                     .to_string(),
             ],
             Lang::En => vec![
@@ -103,7 +120,7 @@ impl Lang {
                     name, selected, total, sort_label
                 ),
                 " Move     ↑↓ Select   Home/End First/Last   ← Parent".to_string(),
-                " Action   →/Enter Open Folder   Tab Focus   s Sort   L Language   q Quit"
+                " Action   →/Enter Open Folder   Tab Focus   f Favorite   F Favorites   s Sort   L Language   q Quit"
                     .to_string(),
             ],
         }
@@ -167,17 +184,30 @@ impl Lang {
         selected: usize,
         total: usize,
         status: &str,
+        favorites_view: bool,
     ) -> Vec<String> {
+        let switch_label = match (self, favorites_view) {
+            (Lang::Zh, true) => "F 返回图库",
+            (Lang::Zh, false) => "F 收藏视图",
+            (Lang::En, true) => "F Gallery",
+            (Lang::En, false) => "F Favorites",
+        };
         match self {
             Lang::Zh => vec![
                 format!(" 文件     {} [{}/{}]{}", name, selected, total, status),
                 " 视图     +/- 缩放   0 重置   hjkl 平移".to_string(),
-                " 操作     ← → 切换图片   r 重命名   Enter/Esc/q 返回   L 语言".to_string(),
+                format!(
+                    " 操作     ← → 切换图片   r 重命名   f 收藏   {}   Enter/Esc/q 返回   L 语言",
+                    switch_label
+                ),
             ],
             Lang::En => vec![
                 format!(" File     {} [{}/{}]{}", name, selected, total, status),
                 " View     +/- Zoom   0 Reset   hjkl Pan".to_string(),
-                " Action   ← → Prev/Next   r Rename   Enter/Esc/q Back   L Language".to_string(),
+                format!(
+                    " Action   ← → Prev/Next   r Rename   f Favorite   {}   Enter/Esc/q Back   L Language",
+                    switch_label
+                ),
             ],
         }
     }
@@ -274,6 +304,55 @@ impl Lang {
         }
     }
 
+    pub fn favorite_badge(&self) -> &'static str {
+        match self {
+            Lang::Zh => "收藏",
+            Lang::En => "Favorite",
+        }
+    }
+
+    pub fn favorite_added(&self) -> &'static str {
+        match self {
+            Lang::Zh => "已收藏",
+            Lang::En => "Favorited",
+        }
+    }
+
+    pub fn favorite_removed(&self) -> &'static str {
+        match self {
+            Lang::Zh => "已取消收藏",
+            Lang::En => "Unfavorited",
+        }
+    }
+
+    pub fn favorite_no_image(&self) -> &'static str {
+        match self {
+            Lang::Zh => "没有可收藏图片",
+            Lang::En => "No image to favorite",
+        }
+    }
+
+    pub fn favorite_none(&self) -> &'static str {
+        match self {
+            Lang::Zh => "没有收藏",
+            Lang::En => "No favorites",
+        }
+    }
+
+    pub fn favorite_save_failed(&self, error: &str) -> String {
+        match self {
+            Lang::Zh => format!("收藏保存失败: {}", error),
+            Lang::En => format!("Favorite save failed: {}", error),
+        }
+    }
+
+    pub fn favorite_missing_skipped(&self, count: usize) -> String {
+        match self {
+            Lang::Zh => format!("已跳过 {} 个缺失收藏文件", count),
+            Lang::En => format!("Skipped {} missing favorite file(s)", count),
+        }
+    }
+
     /// Loading indicator text
     pub fn loading_text(&self) -> &'static str {
         match self {
@@ -366,7 +445,12 @@ mod tests {
             );
             assert_eq!(lang.context_prompt_lines("photos", 1, 3, "Name").len(), 3);
             assert_eq!(lang.search_prompt_lines(1, 5, true).len(), 3);
-            assert_eq!(lang.fullscreen_prompt_lines("test.png", 1, 10, "").len(), 3);
+            assert_eq!(
+                lang.fullscreen_prompt_lines("test.png", 1, 10, "", false)
+                    .len(),
+                3
+            );
+            assert_eq!(lang.favorites_prompt_lines("test.png", 1, 10).len(), 3);
             assert_eq!(lang.rename_prompt_lines("old.png", "new", None).len(), 3);
             assert_eq!(
                 lang.rename_overwrite_prompt_lines("old.png", "new.png")
@@ -383,6 +467,13 @@ mod tests {
             assert!(!lang.rename_cancelled().is_empty());
             assert!(!lang.rename_success("new.png").is_empty());
             assert!(!lang.rename_failed("error").is_empty());
+            assert!(!lang.favorite_badge().is_empty());
+            assert!(!lang.favorite_added().is_empty());
+            assert!(!lang.favorite_removed().is_empty());
+            assert!(!lang.favorite_no_image().is_empty());
+            assert!(!lang.favorite_none().is_empty());
+            assert!(!lang.favorite_save_failed("error").is_empty());
+            assert!(!lang.favorite_missing_skipped(1).is_empty());
             assert!(!lang.label_file().is_empty());
             assert!(!lang.label_dims().is_empty());
             assert!(!lang.label_size().is_empty());
@@ -415,8 +506,12 @@ mod tests {
             Lang::En.search_prompt_lines(1, 5, true)
         );
         assert_ne!(
-            Lang::Zh.fullscreen_prompt_lines("a", 1, 5, ""),
-            Lang::En.fullscreen_prompt_lines("a", 1, 5, "")
+            Lang::Zh.fullscreen_prompt_lines("a", 1, 5, "", false),
+            Lang::En.fullscreen_prompt_lines("a", 1, 5, "", false)
+        );
+        assert_ne!(
+            Lang::Zh.favorites_prompt_lines("a", 1, 5),
+            Lang::En.favorites_prompt_lines("a", 1, 5)
         );
         assert_ne!(
             Lang::Zh.rename_prompt_lines("a.png", "b", Some("状态")),
@@ -447,6 +542,19 @@ mod tests {
         assert_ne!(
             Lang::Zh.rename_failed("error"),
             Lang::En.rename_failed("error")
+        );
+        assert_ne!(Lang::Zh.favorite_badge(), Lang::En.favorite_badge());
+        assert_ne!(Lang::Zh.favorite_added(), Lang::En.favorite_added());
+        assert_ne!(Lang::Zh.favorite_removed(), Lang::En.favorite_removed());
+        assert_ne!(Lang::Zh.favorite_no_image(), Lang::En.favorite_no_image());
+        assert_ne!(Lang::Zh.favorite_none(), Lang::En.favorite_none());
+        assert_ne!(
+            Lang::Zh.favorite_save_failed("error"),
+            Lang::En.favorite_save_failed("error")
+        );
+        assert_ne!(
+            Lang::Zh.favorite_missing_skipped(1),
+            Lang::En.favorite_missing_skipped(1)
         );
         assert_ne!(Lang::Zh.label_file(), Lang::En.label_file());
         assert_ne!(Lang::Zh.label_dims(), Lang::En.label_dims());

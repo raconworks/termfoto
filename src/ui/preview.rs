@@ -75,6 +75,7 @@ impl<'a> Widget for PreviewView<'a> {
                 self.app.selected + 1,
                 self.app.images.len(),
                 &status,
+                self.app.is_favorites_view(),
             );
             render_prompt_lines(areas.prompt, &lines, buf);
         }

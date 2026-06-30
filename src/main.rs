@@ -1,4 +1,5 @@
 mod app;
+mod favorites;
 mod lang;
 mod scanner;
 mod ui;
@@ -164,8 +165,7 @@ fn run(
         let rows = (avail_h / cell_h).max(1) as usize;
         let cell_h = avail_h / rows as u16;
 
-        app.grid_cols = cols;
-        app.visible_rows = rows;
+        app.set_grid_layout(cols, rows);
 
         if app.state == AppState::Browser {
             populate_protocol_cache(&mut app, cell_w, cell_h, size);

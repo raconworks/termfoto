@@ -20,27 +20,32 @@ pub fn is_supported_image(path: &Path) -> bool {
         .unwrap_or(false)
 }
 
+pub fn image_entry_from_path(path: &Path) -> Option<ImageEntry> {
+    if !path.is_file() || !is_supported_image(path) {
+        return None;
+    }
+
+    let filename = path
+        .file_name()
+        .unwrap_or_default()
+        .to_string_lossy()
+        .into_owned();
+    let metadata = std::fs::metadata(path).ok();
+    let file_size = metadata.as_ref().map(|m| m.len()).unwrap_or(0);
+    let modified_at = metadata.and_then(|m| m.modified().ok());
+    Some(ImageEntry {
+        path: path.to_path_buf(),
+        filename,
+        file_size,
+        modified_at,
+    })
+}
+
 pub fn scan_directory(dir: &Path) -> anyhow::Result<Vec<ImageEntry>> {
     let mut entries: Vec<ImageEntry> = std::fs::read_dir(dir)?
         .filter_map(|res| res.ok())
         .map(|e| e.path())
-        .filter(|p| p.is_file() && is_supported_image(p))
-        .map(|path| {
-            let filename = path
-                .file_name()
-                .unwrap_or_default()
-                .to_string_lossy()
-                .into_owned();
-            let metadata = std::fs::metadata(&path).ok();
-            let file_size = metadata.as_ref().map(|m| m.len()).unwrap_or(0);
-            let modified_at = metadata.and_then(|m| m.modified().ok());
-            ImageEntry {
-                path,
-                filename,
-                file_size,
-                modified_at,
-            }
-        })
+        .filter_map(|path| image_entry_from_path(&path))
         .collect();
 
     entries.sort_by(|a, b| a.filename.cmp(&b.filename));

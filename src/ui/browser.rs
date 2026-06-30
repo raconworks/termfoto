@@ -80,53 +80,45 @@ impl<'a> Widget for BrowserView<'a> {
 
         // Grid centered both horizontally and vertically
         let visible_rows = (available / cell_h).max(1) as usize;
+        self.app.visible_rows = visible_rows;
         let grid_h = (visible_rows as u16) * cell_h;
         let grid_top = gallery_inner.y + (available.saturating_sub(grid_h)) / 2;
 
         self.app.clamp_scroll(visible_rows);
 
-        let start = self.app.scroll_row * self.app.grid_cols;
-        let end = (start + visible_rows * self.app.grid_cols).min(self.app.images.len());
-
         // Center the grid horizontally
         let grid_w = self.app.grid_cols as u16 * cell_w;
         let grid_x = gallery_inner.x + (gallery_inner.width.saturating_sub(grid_w)) / 2;
+        let grid = GalleryGrid {
+            x: grid_x,
+            top: grid_top,
+            cell_w,
+            cell_h,
+            bounds: gallery_inner,
+        };
 
         let search_matches: Option<&[usize]> =
             self.app.search.as_ref().map(|s| s.matches.as_slice());
 
+        let favorite_row_len = self.app.favorite_row_len();
+        let normal_visible_rows = self.app.normal_visible_rows(visible_rows);
+        let first_normal_row = if favorite_row_len > 0 { 1 } else { 0 };
+
+        if visible_rows > 0 {
+            for slot in 0..favorite_row_len {
+                let col = slot as u16;
+                render_gallery_slot(self.app, slot, col, 0, &grid, search_matches, buf);
+            }
+        }
+
+        let start = favorite_row_len + self.app.scroll_row * self.app.grid_cols;
+        let end = (start + normal_visible_rows * self.app.grid_cols).min(self.app.images.len());
+
         for slot in start..end {
             let vis_idx = slot - start;
             let col = (vis_idx % self.app.grid_cols) as u16;
-            let row = (vis_idx / self.app.grid_cols) as u16;
-
-            let x = grid_x + col * cell_w;
-            let y = grid_top + row * cell_h;
-            let cell_area = Rect {
-                x,
-                y,
-                width: cell_w,
-                height: cell_h,
-            };
-
-            if x + cell_w > gallery_inner.x + gallery_inner.width
-                || y + cell_h > gallery_inner.y + gallery_inner.height
-            {
-                continue;
-            }
-
-            let is_selected = slot == self.app.selected;
-            let in_matches = search_matches.is_some_and(|m| m.contains(&slot));
-            let search_query = self.app.search.as_ref().map(|s| s.query.as_str());
-
-            let cell_meta = CellMeta {
-                filename: &self.app.images[slot].filename,
-                selected: is_selected,
-                search_match: in_matches,
-                search_query,
-                slot,
-            };
-            render_browser_cell(cell_area, buf, &cell_meta, &self.app.protocol_cache);
+            let row = first_normal_row as u16 + (vis_idx / self.app.grid_cols) as u16;
+            render_gallery_slot(self.app, slot, col, row, &grid, search_matches, buf);
         }
 
         if let Some(lines) = self.app.rename_prompt_lines() {
@@ -145,30 +137,41 @@ impl<'a> Widget for BrowserView<'a> {
                 .get(self.app.selected)
                 .map(|e| e.filename.as_str())
                 .unwrap_or("");
-            let mut lines = match self.app.browser_focus {
-                BrowserFocus::Gallery => self.app.lang.browser_prompt_lines(
+            let mut lines = if self.app.is_favorites_view() {
+                self.app.lang.favorites_prompt_lines(
                     selected_name,
                     self.app
                         .selected
                         .saturating_add(1)
                         .min(self.app.images.len()),
                     self.app.images.len(),
-                    self.app.sort_label(),
-                ),
-                BrowserFocus::Context => {
-                    let context_name = context_entries
-                        .get(self.app.context_selected)
-                        .map(|entry| entry.name.as_str())
-                        .unwrap_or("");
-                    self.app.lang.context_prompt_lines(
-                        context_name,
+                )
+            } else {
+                match self.app.browser_focus {
+                    BrowserFocus::Gallery => self.app.lang.browser_prompt_lines(
+                        selected_name,
                         self.app
-                            .context_selected
+                            .selected
                             .saturating_add(1)
-                            .min(context_entries.len()),
-                        context_entries.len(),
+                            .min(self.app.images.len()),
+                        self.app.images.len(),
                         self.app.sort_label(),
-                    )
+                    ),
+                    BrowserFocus::Context => {
+                        let context_name = context_entries
+                            .get(self.app.context_selected)
+                            .map(|entry| entry.name.as_str())
+                            .unwrap_or("");
+                        self.app.lang.context_prompt_lines(
+                            context_name,
+                            self.app
+                                .context_selected
+                                .saturating_add(1)
+                                .min(context_entries.len()),
+                            context_entries.len(),
+                            self.app.sort_label(),
+                        )
+                    }
                 }
             };
             if let Some(message) = self.app.browser_status_message() {
@@ -179,11 +182,65 @@ impl<'a> Widget for BrowserView<'a> {
     }
 }
 
+struct GalleryGrid {
+    x: u16,
+    top: u16,
+    cell_w: u16,
+    cell_h: u16,
+    bounds: Rect,
+}
+
+fn render_gallery_slot(
+    app: &App,
+    slot: usize,
+    col: u16,
+    row: u16,
+    grid: &GalleryGrid,
+    search_matches: Option<&[usize]>,
+    buf: &mut Buffer,
+) {
+    let x = grid.x + col * grid.cell_w;
+    let y = grid.top + row * grid.cell_h;
+    let cell_area = Rect {
+        x,
+        y,
+        width: grid.cell_w,
+        height: grid.cell_h,
+    };
+
+    if x + grid.cell_w > grid.bounds.x + grid.bounds.width
+        || y + grid.cell_h > grid.bounds.y + grid.bounds.height
+    {
+        return;
+    }
+
+    let is_selected = slot == app.selected;
+    let in_matches = search_matches.is_some_and(|m| m.contains(&slot));
+    let search_query = app.search.as_ref().map(|s| s.query.as_str());
+    let is_favorite = app.is_favorite_index(slot);
+
+    let Some(entry) = app.images.get(slot) else {
+        return;
+    };
+    let cell_meta = CellMeta {
+        filename: &entry.filename,
+        selected: is_selected,
+        search_match: in_matches,
+        search_query,
+        favorite: is_favorite,
+        favorite_label: is_favorite.then(|| app.lang.favorite_badge()),
+        slot,
+    };
+    render_browser_cell(cell_area, buf, &cell_meta, &app.protocol_cache);
+}
+
 struct CellMeta<'a> {
     filename: &'a str,
     selected: bool,
     search_match: bool,
     search_query: Option<&'a str>,
+    favorite: bool,
+    favorite_label: Option<&'a str>,
     slot: usize,
 }
 
@@ -203,6 +260,8 @@ fn render_browser_cell(
     } else if meta.search_match {
         // Search match but not selected: dim yellow
         Style::default().fg(Color::Rgb(128, 128, 0))
+    } else if meta.favorite {
+        Style::default().fg(Color::Magenta)
     } else {
         Style::default().fg(Color::DarkGray)
     };
@@ -226,17 +285,40 @@ fn render_browser_cell(
     // Truncate filename to fit cell width
     let name = truncate_filename(meta.filename, inner.width);
 
+    let badge_height = meta.favorite_label.is_some() as u16;
     let name_height = 1u16;
-    let thumb_area = Rect {
+    let badge_area = Rect {
         y: inner.y,
-        height: inner.height.saturating_sub(name_height),
+        height: badge_height,
+        ..inner
+    };
+    let thumb_area = Rect {
+        y: inner.y + badge_height,
+        height: inner.height.saturating_sub(name_height + badge_height),
         ..inner
     };
     let name_area = Rect {
-        y: inner.y + thumb_area.height,
+        y: inner.y + badge_height + thumb_area.height,
         height: name_height,
         ..inner
     };
+
+    if let Some(label) = meta.favorite_label {
+        let label = truncate_filename(label, badge_area.width);
+        let style = if meta.selected {
+            Style::default().fg(Color::Cyan)
+        } else {
+            Style::default().fg(Color::Magenta)
+        };
+        let label_width = label.chars().count() as u16;
+        let label_x = badge_area.x + (badge_area.width.saturating_sub(label_width)) / 2;
+        buf.set_span(
+            label_x,
+            badge_area.y,
+            &Span::styled(label, style),
+            label_width,
+        );
+    }
 
     // Render chafa thumbnail centered
     if let Some(proto) = cache.peek(&meta.slot) {
@@ -262,6 +344,8 @@ fn render_browser_cell(
         Style::default().fg(Color::Cyan)
     } else if meta.search_match {
         Style::default().fg(Color::Rgb(200, 200, 200))
+    } else if meta.favorite {
+        Style::default().fg(Color::Magenta)
     } else {
         Style::default().fg(Color::White)
     };
@@ -286,6 +370,8 @@ fn render_browser_cell(
         span = Span::styled(name.clone(), Style::default().fg(Color::Cyan));
     } else if meta.search_match {
         span = Span::styled(name.clone(), Style::default().fg(Color::Rgb(200, 200, 200)));
+    } else if meta.favorite {
+        span = Span::styled(name.clone(), Style::default().fg(Color::Magenta));
     } else {
         span = Span::styled(name.clone(), Style::default().fg(Color::White));
     }
@@ -358,11 +444,7 @@ pub fn populate_protocol_cache(
         h: thumb_h,
     };
 
-    let start = app.scroll_row * app.grid_cols;
-    let visible_end = (start + app.visible_rows * app.grid_cols).min(app.images.len());
-
-    let request_order =
-        thumbnail_request_order(start, visible_end, app.grid_cols, app.images.len());
+    let request_order = thumbnail_request_order_for_app(app);
     app.update_thumbnail_interest(thumb_w, thumb_h, request_order.iter().copied());
 
     for slot in request_order {
@@ -375,6 +457,33 @@ pub fn populate_protocol_cache(
         }
         app.request_load(slot, size.clone());
     }
+}
+
+fn thumbnail_request_order_for_app(app: &App) -> Vec<usize> {
+    let favorite_row_len = app.favorite_row_len();
+    if favorite_row_len == 0 {
+        let start = app.scroll_row * app.grid_cols;
+        let visible_end = (start + app.visible_rows * app.grid_cols).min(app.images.len());
+        return thumbnail_request_order(start, visible_end, app.grid_cols, app.images.len());
+    }
+
+    let grid_cols = app.grid_cols.max(1);
+    let normal_visible_rows = app.normal_visible_rows(app.visible_rows);
+    let normal_start = favorite_row_len + app.scroll_row * grid_cols;
+    let normal_visible_end = (normal_start + normal_visible_rows * grid_cols).min(app.images.len());
+    let previous_start = favorite_row_len + app.scroll_row.saturating_sub(1) * grid_cols;
+    let previous_end = normal_start;
+    let next_start = normal_visible_end;
+    let next_end = (next_start + grid_cols).min(app.images.len());
+
+    let mut slots = Vec::new();
+    slots.extend(0..favorite_row_len);
+    slots.extend(normal_start..normal_visible_end);
+    if app.scroll_row > 0 {
+        slots.extend(previous_start..previous_end);
+    }
+    slots.extend(next_start..next_end);
+    slots
 }
 
 fn thumbnail_request_order(
@@ -467,6 +576,39 @@ mod tests {
     }
 
     #[test]
+    fn thumbnail_request_order_includes_pinned_row_and_visible_normal_rows() {
+        let dir = tempdir().unwrap();
+        let images = (0..5)
+            .map(|idx| ImageEntry {
+                path: dir.path().join(format!("img{idx}.png")),
+                filename: format!("img{idx}.png"),
+                file_size: 0,
+                modified_at: None,
+            })
+            .collect();
+        let (tx, _rx) = std::sync::mpsc::channel::<LoadRequest>();
+        let (_tx2, rx2) = std::sync::mpsc::channel::<LoadResult>();
+        let mut app = App::new(
+            AppStart {
+                images,
+                image_dir: dir.path().to_path_buf(),
+                state: AppState::Browser,
+                selected: 0,
+            },
+            tx,
+            rx2,
+            Lang::En,
+            Picker::halfblocks(),
+        );
+        app.set_favorite_store_path_for_tests(dir.path().join("favorites.tsv"));
+        app.set_grid_layout(2, 2);
+        app.add_favorite_for_tests(&dir.path().join("img2.png"), 10);
+        app.scroll_row = 1;
+
+        assert_eq!(thumbnail_request_order_for_app(&app), vec![0, 3, 4, 1, 2]);
+    }
+
+    #[test]
     fn browser_render_includes_three_panel_titles_and_prompt_row() {
         let (_dir, mut app) = render_test_app();
         app.grid_cols = 2;
@@ -491,6 +633,25 @@ mod tests {
             .map(|x| buf.cell((x, prompt_text_row)).unwrap().symbol())
             .collect();
         assert!(prompt_row.contains("sample.png"));
+    }
+
+    #[test]
+    fn browser_render_marks_favorite_cells() {
+        let (dir, mut app) = render_test_app();
+        app.set_favorite_store_path_for_tests(dir.path().join("favorites.tsv"));
+        let path = app.images[0].path.clone();
+        app.add_favorite_for_tests(&path, 10);
+        let area = Rect::new(0, 0, 100, 20);
+        let mut buf = Buffer::empty(area);
+
+        BrowserView {
+            app: &mut app,
+            cell_w: 24,
+            cell_h: 8,
+        }
+        .render(area, &mut buf);
+
+        assert!(buffer_text(&buf).contains("Favorite"));
     }
 
     #[test]
