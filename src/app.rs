@@ -974,6 +974,7 @@ impl App {
         self.render_settle_deadline = None;
         self.load_control
             .clear_original_interest(self.directory_generation);
+        self.clear_pending_original_requests();
     }
 
     pub fn fullscreen_prev(&mut self) {
@@ -1491,6 +1492,13 @@ impl App {
         self.cache_width = 0;
         self.load_control
             .clear_thumbnail_interest(self.directory_generation);
+    }
+
+    fn clear_pending_original_requests(&mut self) {
+        let current_generation = self.directory_generation;
+        self.requested.retain(|(generation, _, size)| {
+            *generation != current_generation || !matches!(size, LoadSize::Original)
+        });
     }
 
     pub(crate) fn update_thumbnail_interest<I>(&self, w: u16, h: u16, slots: I)
@@ -2772,6 +2780,29 @@ mod tests {
 
         assert_eq!(app.fullscreen_frame_index(), 0);
         assert!(app.current_fullscreen_protocol().is_none());
+    }
+
+    #[test]
+    fn exiting_fullscreen_clears_pending_original_request_for_reentry() {
+        let (mut app, rx) = make_app_with_load_rx(1);
+
+        app.enter_fullscreen();
+        let first = rx.try_recv().unwrap();
+        assert_eq!(first.size, LoadSize::Original);
+        assert!(app
+            .requested
+            .contains(&(app.directory_generation, 0, LoadSize::Original)));
+
+        app.exit_fullscreen();
+        assert!(!app
+            .requested
+            .contains(&(app.directory_generation, 0, LoadSize::Original)));
+
+        app.enter_fullscreen();
+        let second = rx.try_recv().unwrap();
+        assert_eq!(second.size, LoadSize::Original);
+        assert_eq!(second.generation, app.directory_generation);
+        assert!(rx.try_recv().is_err());
     }
 
     #[test]
