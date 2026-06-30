@@ -1,6 +1,6 @@
 use std::collections::HashSet;
-use std::fs::File;
-use std::io::BufReader;
+use std::fs::{self, File};
+use std::io::{self, BufReader};
 use std::num::NonZeroUsize;
 use std::path::{Path, PathBuf};
 use std::sync::{
@@ -169,6 +169,51 @@ pub enum BrowserFocus {
     Context,
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub struct RenameState {
+    pub original_path: PathBuf,
+    pub original_filename: String,
+    pub original_stem: String,
+    pub input: String,
+    pub pending_overwrite: bool,
+    pub origin: AppState,
+    pub message: Option<String>,
+}
+
+impl RenameState {
+    fn new(original_path: PathBuf, original_filename: String, origin: AppState) -> Self {
+        let original_stem = original_path
+            .file_stem()
+            .map(|stem| stem.to_string_lossy().into_owned())
+            .filter(|stem| !stem.is_empty())
+            .unwrap_or_else(|| original_filename.clone());
+        Self {
+            original_path,
+            original_filename,
+            original_stem: original_stem.clone(),
+            input: original_stem,
+            pending_overwrite: false,
+            origin,
+            message: None,
+        }
+    }
+
+    fn target_filename(&self) -> String {
+        self.original_path
+            .extension()
+            .and_then(|ext| ext.to_str())
+            .filter(|ext| !ext.is_empty())
+            .map(|ext| format!("{}.{}", self.input, ext))
+            .unwrap_or_else(|| self.input.clone())
+    }
+
+    fn target_path(&self) -> PathBuf {
+        let mut target = self.original_path.clone();
+        target.set_file_name(self.target_filename());
+        target
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ImageSortMode {
     Name,
@@ -213,6 +258,7 @@ pub struct App {
     pub visible_rows: usize,
     pub requested: HashSet<(u64, usize, LoadSize)>,
     pub search: Option<SearchState>,
+    pub rename: Option<RenameState>,
     pub zoom: f32,
     pub pan_x: i16,
     pub pan_y: i16,
@@ -504,6 +550,7 @@ impl App {
             visible_rows: 1,
             requested: HashSet::new(),
             search: None,
+            rename: None,
             zoom: 1.0,
             pan_x: 0,
             pan_y: 0,
@@ -699,6 +746,160 @@ impl App {
             return None;
         }
         Some(message.clone())
+    }
+
+    pub fn rename_prompt_lines(&self) -> Option<Vec<String>> {
+        let rename = self.rename.as_ref()?;
+        if rename.pending_overwrite {
+            Some(self.lang.rename_overwrite_prompt_lines(
+                &rename.original_filename,
+                &rename.target_filename(),
+            ))
+        } else {
+            Some(self.lang.rename_prompt_lines(
+                &rename.original_filename,
+                &rename.input,
+                rename.message.as_deref(),
+            ))
+        }
+    }
+
+    fn set_status_message(&mut self, message: String) {
+        self.status_message = Some((message, Instant::now() + Duration::from_secs(2)));
+    }
+
+    fn start_rename_current(&mut self) {
+        let Some(entry) = self.images.get(self.selected) else {
+            self.set_status_message(self.lang.rename_no_image().to_string());
+            return;
+        };
+        self.rename = Some(RenameState::new(
+            entry.path.clone(),
+            entry.filename.clone(),
+            self.state.clone(),
+        ));
+    }
+
+    fn handle_rename_key(&mut self, code: KeyCode, modifiers: KeyModifiers) -> bool {
+        let Some(mut rename) = self.rename.take() else {
+            return false;
+        };
+
+        if rename.pending_overwrite {
+            match code {
+                KeyCode::Char('y') | KeyCode::Char('Y') => {
+                    let target_path = rename.target_path();
+                    match rename_over_existing(&rename.original_path, &target_path) {
+                        Ok(()) => self.finish_rename_success(target_path),
+                        Err(err) => self.set_status_message(
+                            self.lang.rename_failed(&err.to_string()).to_string(),
+                        ),
+                    }
+                }
+                KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc => {
+                    self.set_status_message(self.lang.rename_cancelled().to_string());
+                }
+                _ => {
+                    self.rename = Some(rename);
+                }
+            }
+            return false;
+        }
+
+        match code {
+            KeyCode::Esc => {
+                self.set_status_message(self.lang.rename_cancelled().to_string());
+            }
+            KeyCode::Backspace => {
+                rename.input.pop();
+                rename.message = None;
+                self.rename = Some(rename);
+            }
+            KeyCode::Enter => {
+                if let Some(rename) = self.submit_rename(rename) {
+                    self.rename = Some(rename);
+                }
+            }
+            KeyCode::Char(c)
+                if !modifiers.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
+            {
+                rename.input.push(c);
+                rename.message = None;
+                self.rename = Some(rename);
+            }
+            _ => {
+                self.rename = Some(rename);
+            }
+        }
+        false
+    }
+
+    fn submit_rename(&mut self, mut rename: RenameState) -> Option<RenameState> {
+        if rename.input.is_empty() {
+            rename.message = Some(self.lang.rename_empty_name().to_string());
+            return Some(rename);
+        }
+        if rename.input.contains('/') || rename.input.contains('\\') {
+            rename.message = Some(self.lang.rename_invalid_name().to_string());
+            return Some(rename);
+        }
+        if rename.input == rename.original_stem {
+            self.set_status_message(self.lang.rename_unchanged().to_string());
+            return None;
+        }
+
+        let target_path = rename.target_path();
+        if target_path.exists() {
+            rename.pending_overwrite = true;
+            rename.message = None;
+            return Some(rename);
+        }
+
+        match fs::rename(&rename.original_path, &target_path) {
+            Ok(()) => {
+                self.finish_rename_success(target_path);
+                None
+            }
+            Err(err) => {
+                self.set_status_message(self.lang.rename_failed(&err.to_string()).to_string());
+                None
+            }
+        }
+    }
+
+    fn finish_rename_success(&mut self, target_path: PathBuf) {
+        let target_name = target_path
+            .file_name()
+            .map(|name| name.to_string_lossy().into_owned())
+            .unwrap_or_else(|| target_path.to_string_lossy().into_owned());
+
+        self.search = None;
+        self.rename = None;
+        self.directory_generation = self.directory_generation.wrapping_add(1);
+        self.clear_directory_caches();
+
+        let Ok(mut images) = scan_directory(&self.image_dir) else {
+            self.set_status_message(self.lang.directory_error().to_string());
+            return;
+        };
+
+        sort_image_entries(&mut images, self.sort_mode);
+        self.images = images;
+        self.selected = self
+            .images
+            .iter()
+            .position(|entry| entry.path == target_path)
+            .or_else(|| {
+                self.images
+                    .iter()
+                    .position(|entry| entry.filename == target_name)
+            })
+            .unwrap_or_else(|| self.selected.min(self.images.len().saturating_sub(1)));
+        self.clamp_scroll(self.visible_rows.max(1));
+        self.set_status_message(self.lang.rename_success(&target_name).to_string());
+        if self.state == AppState::Fullscreen && !self.images.is_empty() {
+            self.prepare_fullscreen_selection();
+        }
     }
 
     pub fn navigate_left(&mut self) {
@@ -1307,6 +1508,10 @@ impl App {
 
     /// Handle a key event. Returns true if the app should quit.
     pub fn handle_key(&mut self, code: KeyCode, modifiers: KeyModifiers) -> bool {
+        if self.rename.is_some() {
+            return self.handle_rename_key(code, modifiers);
+        }
+
         match self.state {
             AppState::Browser => {
                 // In search mode, delegate to search handler
@@ -1348,6 +1553,7 @@ impl App {
                             KeyCode::Home => self.navigate_home(),
                             KeyCode::End => self.navigate_end(),
                             KeyCode::Enter => self.enter_fullscreen(),
+                            KeyCode::Char('r') => self.start_rename_current(),
                             _ => {}
                         },
                         BrowserFocus::Context => match code {
@@ -1373,6 +1579,7 @@ impl App {
                 KeyCode::Char('+') | KeyCode::Char('=') => self.zoom_in(),
                 KeyCode::Char('-') => self.zoom_out(),
                 KeyCode::Char('0') => self.zoom_reset(),
+                KeyCode::Char('r') => self.start_rename_current(),
                 KeyCode::Char('h') => self.pan_left(),
                 KeyCode::Char('l') => self.pan_right(),
                 KeyCode::Char('k') => self.pan_up(),
@@ -1584,6 +1791,51 @@ fn sort_image_entries(images: &mut [ImageEntry], sort_mode: ImageSortMode) {
             });
         }
     }
+}
+
+fn rename_over_existing(source: &Path, target: &Path) -> io::Result<()> {
+    if !target.is_file() {
+        return Err(io::Error::new(
+            io::ErrorKind::AlreadyExists,
+            "target is not a file",
+        ));
+    }
+    let backup = unique_overwrite_backup_path(target)?;
+    fs::rename(target, &backup)?;
+    match fs::rename(source, target) {
+        Ok(()) => {
+            let _ = fs::remove_file(backup);
+            Ok(())
+        }
+        Err(err) => {
+            let _ = fs::rename(&backup, target);
+            Err(err)
+        }
+    }
+}
+
+fn unique_overwrite_backup_path(target: &Path) -> io::Result<PathBuf> {
+    let parent = target.parent().unwrap_or_else(|| Path::new("."));
+    let filename = target
+        .file_name()
+        .map(|name| name.to_string_lossy())
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "missing target filename"))?;
+    let pid = std::process::id();
+
+    for attempt in 0..1000 {
+        let candidate = parent.join(format!(
+            ".{}.termfoto-overwrite-backup-{}-{}",
+            filename, pid, attempt
+        ));
+        if !candidate.exists() {
+            return Ok(candidate);
+        }
+    }
+
+    Err(io::Error::new(
+        io::ErrorKind::AlreadyExists,
+        "could not create backup path",
+    ))
 }
 
 /// Size mode for background image loading.
@@ -2141,6 +2393,41 @@ mod tests {
         ))
         .save(path)
         .unwrap();
+    }
+
+    fn make_app_for_dir(
+        dir: &Path,
+        selected: usize,
+        state: AppState,
+    ) -> (App, Receiver<LoadRequest>) {
+        let images = scan_directory(dir).unwrap();
+        let (tx, rx) = std::sync::mpsc::channel::<LoadRequest>();
+        let (_tx2, rx2) = std::sync::mpsc::channel::<LoadResult>();
+        (
+            App::new(
+                AppStart {
+                    images,
+                    image_dir: dir.to_path_buf(),
+                    state,
+                    selected,
+                },
+                tx,
+                rx2,
+                Lang::En,
+                Picker::halfblocks(),
+            ),
+            rx,
+        )
+    }
+
+    fn set_rename_input(app: &mut App, value: &str) {
+        let current_len = app.rename.as_ref().unwrap().input.chars().count();
+        for _ in 0..current_len {
+            app.handle_key(KeyCode::Backspace, KeyModifiers::NONE);
+        }
+        for ch in value.chars() {
+            app.handle_key(KeyCode::Char(ch), KeyModifiers::NONE);
+        }
     }
 
     fn missing_load_request(idx: usize, size: LoadSize, generation: u64) -> LoadRequest {
@@ -3409,6 +3696,190 @@ mod tests {
             .unwrap();
         app.collect_loads();
         assert!(app.protocol_cache.is_empty());
+    }
+
+    // ---- Rename tests ----
+
+    #[test]
+    fn rename_shortcut_starts_only_from_gallery_or_fullscreen() {
+        let mut app = make_app(1);
+        app.handle_key(KeyCode::Char('r'), KeyModifiers::NONE);
+        assert!(app.rename.is_some());
+        assert_eq!(app.rename.as_ref().unwrap().input, "img000");
+
+        let mut app = make_app(1);
+        app.browser_focus = BrowserFocus::Context;
+        app.handle_key(KeyCode::Char('r'), KeyModifiers::NONE);
+        assert!(app.rename.is_none());
+
+        let mut app = make_app(1);
+        app.state = AppState::Fullscreen;
+        app.handle_key(KeyCode::Char('r'), KeyModifiers::NONE);
+        assert!(app.rename.is_some());
+        assert_eq!(app.rename.as_ref().unwrap().origin, AppState::Fullscreen);
+    }
+
+    #[test]
+    fn search_mode_keeps_r_as_query_text() {
+        let mut app = make_app_with_names(&["sample.png"]);
+
+        app.handle_key(KeyCode::Char('/'), KeyModifiers::NONE);
+        app.handle_key(KeyCode::Char('r'), KeyModifiers::NONE);
+
+        assert!(app.rename.is_none());
+        assert_eq!(app.search.as_ref().unwrap().query, "r");
+    }
+
+    #[test]
+    fn rename_input_backspace_and_escape_work() {
+        let mut app = make_app(1);
+
+        app.handle_key(KeyCode::Char('r'), KeyModifiers::NONE);
+        app.handle_key(KeyCode::Char('x'), KeyModifiers::NONE);
+        assert_eq!(app.rename.as_ref().unwrap().input, "img000x");
+
+        app.handle_key(KeyCode::Backspace, KeyModifiers::NONE);
+        assert_eq!(app.rename.as_ref().unwrap().input, "img000");
+
+        app.handle_key(KeyCode::Esc, KeyModifiers::NONE);
+        assert!(app.rename.is_none());
+        assert!(app.browser_status_message().is_some());
+    }
+
+    #[test]
+    fn rename_rejects_empty_separator_and_unchanged_names() {
+        let dir = tempdir().unwrap();
+        write_png(&dir.path().join("old.png"));
+        let (mut app, _rx) = make_app_for_dir(dir.path(), 0, AppState::Browser);
+
+        app.handle_key(KeyCode::Char('r'), KeyModifiers::NONE);
+        set_rename_input(&mut app, "");
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE);
+        assert!(app.rename.is_some());
+        assert!(app.rename.as_ref().unwrap().message.is_some());
+        assert!(dir.path().join("old.png").exists());
+
+        set_rename_input(&mut app, "bad/name");
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE);
+        assert!(app.rename.is_some());
+        assert!(app.rename.as_ref().unwrap().message.is_some());
+        assert!(!dir.path().join("bad.png").exists());
+
+        set_rename_input(&mut app, "old");
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE);
+        assert!(app.rename.is_none());
+        assert!(dir.path().join("old.png").exists());
+    }
+
+    #[test]
+    fn rename_preserves_extension_selects_new_file_and_clears_caches() {
+        let dir = tempdir().unwrap();
+        write_png(&dir.path().join("old.jpg"));
+        write_png(&dir.path().join("z.png"));
+        let (mut app, _rx) = make_app_for_dir(dir.path(), 0, AppState::Browser);
+        app.protocol_cache.put(0, make_protocol());
+        app.requested.insert((
+            app.directory_generation,
+            0,
+            LoadSize::Thumbnail { w: 1, h: 1 },
+        ));
+        app.insert_fullscreen_original(0, Arc::new(image::RgbaImage::new(1, 1)));
+        let generation = app.directory_generation;
+
+        app.handle_key(KeyCode::Char('r'), KeyModifiers::NONE);
+        set_rename_input(&mut app, "new");
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE);
+
+        assert!(!dir.path().join("old.jpg").exists());
+        assert!(dir.path().join("new.jpg").exists());
+        assert_eq!(app.images[app.selected].filename, "new.jpg");
+        assert_eq!(app.sort_mode, ImageSortMode::Name);
+        assert!(app.protocol_cache.is_empty());
+        assert!(app.requested.is_empty());
+        assert!(app.fullscreen_original_cache.is_empty());
+        assert!(app.directory_generation > generation);
+    }
+
+    #[test]
+    fn rename_existing_target_requires_confirmation_and_can_cancel() {
+        let dir = tempdir().unwrap();
+        fs::write(dir.path().join("old.png"), b"source").unwrap();
+        fs::write(dir.path().join("target.png"), b"target").unwrap();
+        let (mut app, _rx) = make_app_for_dir(dir.path(), 0, AppState::Browser);
+
+        app.handle_key(KeyCode::Char('r'), KeyModifiers::NONE);
+        set_rename_input(&mut app, "target");
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE);
+
+        assert!(app.rename.as_ref().unwrap().pending_overwrite);
+        app.handle_key(KeyCode::Char('n'), KeyModifiers::NONE);
+
+        assert!(app.rename.is_none());
+        assert_eq!(fs::read(dir.path().join("old.png")).unwrap(), b"source");
+        assert_eq!(fs::read(dir.path().join("target.png")).unwrap(), b"target");
+    }
+
+    #[test]
+    fn rename_existing_target_overwrites_after_confirmation() {
+        let dir = tempdir().unwrap();
+        fs::write(dir.path().join("old.png"), b"source").unwrap();
+        fs::write(dir.path().join("target.png"), b"target").unwrap();
+        let (mut app, _rx) = make_app_for_dir(dir.path(), 0, AppState::Browser);
+
+        app.handle_key(KeyCode::Char('r'), KeyModifiers::NONE);
+        set_rename_input(&mut app, "target");
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE);
+        app.handle_key(KeyCode::Char('y'), KeyModifiers::NONE);
+
+        assert!(app.rename.is_none());
+        assert!(!dir.path().join("old.png").exists());
+        assert_eq!(fs::read(dir.path().join("target.png")).unwrap(), b"source");
+        assert_eq!(image_names(&app), vec!["target.png"]);
+        assert_eq!(app.images[app.selected].filename, "target.png");
+    }
+
+    #[test]
+    fn rename_refresh_keeps_size_sort_order_and_selected_image() {
+        let dir = tempdir().unwrap();
+        fs::write(dir.path().join("large.png"), b"123456789").unwrap();
+        fs::write(dir.path().join("small.png"), b"1").unwrap();
+        let (mut app, _rx) = make_app_for_dir(dir.path(), 0, AppState::Browser);
+        app.sort_mode = ImageSortMode::Size;
+        sort_image_entries(&mut app.images, app.sort_mode);
+        app.selected = app
+            .images
+            .iter()
+            .position(|entry| entry.filename == "small.png")
+            .unwrap();
+
+        app.handle_key(KeyCode::Char('r'), KeyModifiers::NONE);
+        set_rename_input(&mut app, "renamed");
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE);
+
+        assert_eq!(app.sort_mode, ImageSortMode::Size);
+        assert_eq!(image_names(&app), vec!["large.png", "renamed.png"]);
+        assert_eq!(app.images[app.selected].filename, "renamed.png");
+    }
+
+    #[test]
+    fn fullscreen_rename_keeps_fullscreen_and_requests_new_original() {
+        let dir = tempdir().unwrap();
+        write_png(&dir.path().join("old.png"));
+        let (mut app, rx) = make_app_for_dir(dir.path(), 0, AppState::Fullscreen);
+        while rx.try_recv().is_ok() {}
+
+        app.handle_key(KeyCode::Char('r'), KeyModifiers::NONE);
+        set_rename_input(&mut app, "new");
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE);
+
+        assert_eq!(app.state, AppState::Fullscreen);
+        assert_eq!(app.images[app.selected].filename, "new.png");
+        assert!(app.fullscreen_pending);
+
+        let request = rx.try_recv().unwrap();
+        assert_eq!(request.path, dir.path().join("new.png"));
+        assert_eq!(request.size, LoadSize::Original);
+        assert_eq!(request.generation, app.directory_generation);
     }
 
     // ---- Search tests ----

@@ -60,7 +60,9 @@ impl<'a> Widget for PreviewView<'a> {
         );
 
         // --- Status bar ---
-        if let Some(entry) = self.app.images.get(self.app.selected) {
+        if let Some(lines) = self.app.rename_prompt_lines() {
+            render_prompt_lines(areas.prompt, &lines, buf);
+        } else if let Some(entry) = self.app.images.get(self.app.selected) {
             let status = if self.app.fullscreen_pending {
                 self.app.lang.loading_text().to_string()
             } else if (self.app.zoom - 1.0).abs() > f32::EPSILON {

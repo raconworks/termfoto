@@ -129,7 +129,9 @@ impl<'a> Widget for BrowserView<'a> {
             render_browser_cell(cell_area, buf, &cell_meta, &self.app.protocol_cache);
         }
 
-        if let Some(ref search) = self.app.search {
+        if let Some(lines) = self.app.rename_prompt_lines() {
+            render_prompt_lines(areas.prompt, &lines, buf);
+        } else if let Some(ref search) = self.app.search {
             render_prompt_base(areas.prompt, buf);
             SearchBar {
                 state: search,
