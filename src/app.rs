@@ -71,9 +71,27 @@ pub enum BrowserFocus {
     Context,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ImageSortMode {
+    Name,
+    Modified,
+    Size,
+}
+
+impl ImageSortMode {
+    fn next(self) -> Self {
+        match self {
+            ImageSortMode::Name => ImageSortMode::Modified,
+            ImageSortMode::Modified => ImageSortMode::Size,
+            ImageSortMode::Size => ImageSortMode::Name,
+        }
+    }
+}
+
 pub struct App {
     pub state: AppState,
     pub images: Vec<ImageEntry>,
+    pub sort_mode: ImageSortMode,
     pub image_dir: PathBuf,
     pub(crate) context_dir: PathBuf,
     pub selected: usize,
@@ -333,17 +351,24 @@ impl App {
         picker: Picker,
     ) -> Self {
         let AppStart {
-            images,
+            mut images,
             image_dir,
             state,
             selected,
         } = start;
-        let selected = selected.min(images.len().saturating_sub(1));
+        let sort_mode = ImageSortMode::Name;
+        let selected_path = images.get(selected).map(|entry| entry.path.clone());
+        sort_image_entries(&mut images, sort_mode);
+        let selected = selected_path
+            .as_ref()
+            .and_then(|path| images.iter().position(|entry| &entry.path == path))
+            .unwrap_or_else(|| selected.min(images.len().saturating_sub(1)));
         let fullscreen_pending = state == AppState::Fullscreen;
         let (render_tx, render_rx) = spawn_render_worker(picker.clone());
         let mut app = Self {
             state,
             images,
+            sort_mode,
             context_dir: image_dir.clone(),
             image_dir,
             selected,
@@ -397,6 +422,37 @@ impl App {
             app.prepare_fullscreen_selection();
         }
         app
+    }
+
+    pub fn sort_label(&self) -> &'static str {
+        match (self.lang, self.sort_mode) {
+            (Lang::Zh, ImageSortMode::Name) => "名称",
+            (Lang::Zh, ImageSortMode::Modified) => "修改时间",
+            (Lang::Zh, ImageSortMode::Size) => "大小",
+            (Lang::En, ImageSortMode::Name) => "Name",
+            (Lang::En, ImageSortMode::Modified) => "Modified",
+            (Lang::En, ImageSortMode::Size) => "Size",
+        }
+    }
+
+    pub fn cycle_sort_mode(&mut self) {
+        self.sort_mode = self.sort_mode.next();
+        self.sort_images_preserving_selection();
+    }
+
+    fn sort_images_preserving_selection(&mut self) {
+        let selected_path = self
+            .images
+            .get(self.selected)
+            .map(|entry| entry.path.clone());
+        sort_image_entries(&mut self.images, self.sort_mode);
+        self.selected = selected_path
+            .as_ref()
+            .and_then(|path| self.images.iter().position(|entry| &entry.path == path))
+            .unwrap_or(0);
+        self.clamp_scroll(self.visible_rows.max(1));
+        self.directory_generation = self.directory_generation.wrapping_add(1);
+        self.clear_directory_caches();
     }
 
     pub fn directory_context_for_browser(&self) -> Vec<DirectoryContextEntry> {
@@ -490,6 +546,8 @@ impl App {
 
         self.image_dir = dir;
         self.context_dir = context_dir;
+        let mut images = images;
+        sort_image_entries(&mut images, self.sort_mode);
         self.images = images;
         self.selected = 0;
         self.scroll_row = 0;
@@ -1121,6 +1179,7 @@ impl App {
                     KeyCode::Char('L') | KeyCode::Char('l') => {
                         self.lang.toggle();
                     }
+                    KeyCode::Char('s') => self.cycle_sort_mode(),
                     KeyCode::Char('/') | KeyCode::Char('\\') => {
                         let trigger = match code {
                             KeyCode::Char(c) => c,
@@ -1361,6 +1420,28 @@ fn browser_context_parent(path: &Path) -> Option<PathBuf> {
         Some(PathBuf::from("."))
     } else {
         Some(parent.to_path_buf())
+    }
+}
+
+fn sort_image_entries(images: &mut [ImageEntry], sort_mode: ImageSortMode) {
+    match sort_mode {
+        ImageSortMode::Name => {
+            images.sort_by(|a, b| a.filename.cmp(&b.filename));
+        }
+        ImageSortMode::Modified => {
+            images.sort_by(|a, b| {
+                b.modified_at
+                    .cmp(&a.modified_at)
+                    .then_with(|| a.filename.cmp(&b.filename))
+            });
+        }
+        ImageSortMode::Size => {
+            images.sort_by(|a, b| {
+                b.file_size
+                    .cmp(&a.file_size)
+                    .then_with(|| a.filename.cmp(&b.filename))
+            });
+        }
     }
 }
 
@@ -1736,7 +1817,7 @@ mod tests {
     use super::*;
     use std::fs;
     use std::path::PathBuf;
-    use std::time::{Duration, Instant};
+    use std::time::{Duration, Instant, UNIX_EPOCH};
     use tempfile::tempdir;
 
     fn make_app(count: usize) -> App {
@@ -1745,6 +1826,7 @@ mod tests {
                 path: PathBuf::from(format!("img{:03}.png", i)),
                 filename: format!("img{:03}.png", i),
                 file_size: 0,
+                modified_at: None,
             })
             .collect();
         let (tx, _rx) = std::sync::mpsc::channel::<LoadRequest>();
@@ -1769,6 +1851,7 @@ mod tests {
                 path: PathBuf::from(format!("img{:03}.png", i)),
                 filename: format!("img{:03}.png", i),
                 file_size: 0,
+                modified_at: None,
             })
             .collect();
         let (tx, rx) = std::sync::mpsc::channel::<LoadRequest>();
@@ -1796,6 +1879,7 @@ mod tests {
                 path: PathBuf::from(format!("img{:03}.png", i)),
                 filename: format!("img{:03}.png", i),
                 file_size: 0,
+                modified_at: None,
             })
             .collect();
         let (tx, _rx) = std::sync::mpsc::channel::<LoadRequest>();
@@ -1815,6 +1899,39 @@ mod tests {
             ),
             done_tx,
         )
+    }
+
+    fn test_entry(name: &str, file_size: u64, modified_secs: Option<u64>) -> ImageEntry {
+        ImageEntry {
+            path: PathBuf::from(name),
+            filename: name.to_string(),
+            file_size,
+            modified_at: modified_secs.map(|secs| UNIX_EPOCH + Duration::from_secs(secs)),
+        }
+    }
+
+    fn make_app_with_entries(images: Vec<ImageEntry>) -> App {
+        let (tx, _rx) = std::sync::mpsc::channel::<LoadRequest>();
+        let (_tx2, rx2) = std::sync::mpsc::channel::<LoadResult>();
+        App::new(
+            AppStart {
+                images,
+                image_dir: PathBuf::from("."),
+                state: AppState::Browser,
+                selected: 0,
+            },
+            tx,
+            rx2,
+            Lang::Zh,
+            Picker::halfblocks(),
+        )
+    }
+
+    fn image_names(app: &App) -> Vec<&str> {
+        app.images
+            .iter()
+            .map(|entry| entry.filename.as_str())
+            .collect()
     }
 
     fn make_protocol() -> Protocol {
@@ -1844,6 +1961,165 @@ mod tests {
         ))
         .save(path)
         .unwrap();
+    }
+
+    #[test]
+    fn sort_mode_defaults_to_name_order() {
+        let app = make_app_with_entries(vec![
+            test_entry("zebra.png", 1, Some(1)),
+            test_entry("apple.png", 1, Some(3)),
+            test_entry("mango.png", 1, Some(2)),
+        ]);
+
+        assert_eq!(app.sort_mode, ImageSortMode::Name);
+        assert_eq!(
+            image_names(&app),
+            vec!["apple.png", "mango.png", "zebra.png"]
+        );
+    }
+
+    #[test]
+    fn sort_key_cycles_modes() {
+        let mut app = make_app(0);
+
+        assert_eq!(app.sort_mode, ImageSortMode::Name);
+        app.handle_key(KeyCode::Char('s'), KeyModifiers::NONE);
+        assert_eq!(app.sort_mode, ImageSortMode::Modified);
+        app.handle_key(KeyCode::Char('s'), KeyModifiers::NONE);
+        assert_eq!(app.sort_mode, ImageSortMode::Size);
+        app.handle_key(KeyCode::Char('s'), KeyModifiers::NONE);
+        assert_eq!(app.sort_mode, ImageSortMode::Name);
+    }
+
+    #[test]
+    fn modified_sort_is_newest_first_and_missing_last() {
+        let mut app = make_app_with_entries(vec![
+            test_entry("missing.png", 1, None),
+            test_entry("old.png", 1, Some(10)),
+            test_entry("new.png", 1, Some(30)),
+        ]);
+
+        app.handle_key(KeyCode::Char('s'), KeyModifiers::NONE);
+
+        assert_eq!(app.sort_mode, ImageSortMode::Modified);
+        assert_eq!(image_names(&app), vec!["new.png", "old.png", "missing.png"]);
+    }
+
+    #[test]
+    fn size_sort_is_largest_first() {
+        let mut app = make_app_with_entries(vec![
+            test_entry("small.png", 5, Some(10)),
+            test_entry("large.png", 50, Some(30)),
+            test_entry("medium.png", 25, Some(20)),
+        ]);
+
+        app.handle_key(KeyCode::Char('s'), KeyModifiers::NONE);
+        app.handle_key(KeyCode::Char('s'), KeyModifiers::NONE);
+
+        assert_eq!(app.sort_mode, ImageSortMode::Size);
+        assert_eq!(
+            image_names(&app),
+            vec!["large.png", "medium.png", "small.png"]
+        );
+    }
+
+    #[test]
+    fn sorting_preserves_selected_image_and_invalidates_loads() {
+        let mut app = make_app_with_entries(vec![
+            test_entry("a.png", 1, Some(10)),
+            test_entry("b.png", 1, Some(30)),
+            test_entry("c.png", 1, Some(20)),
+        ]);
+        app.grid_cols = 1;
+        app.visible_rows = 1;
+        app.selected = 0;
+        app.scroll_row = 0;
+        app.protocol_cache.insert(0, make_protocol());
+        app.requested.insert((
+            app.directory_generation,
+            0,
+            LoadSize::Thumbnail { w: 1, h: 1 },
+        ));
+        let generation = app.directory_generation;
+
+        app.handle_key(KeyCode::Char('s'), KeyModifiers::NONE);
+
+        assert_eq!(image_names(&app), vec!["b.png", "c.png", "a.png"]);
+        assert_eq!(app.images[app.selected].filename, "a.png");
+        assert_eq!(app.selected, 2);
+        assert_eq!(app.scroll_row, 2);
+        assert!(app.protocol_cache.is_empty());
+        assert!(app.requested.is_empty());
+        assert!(app.directory_generation > generation);
+    }
+
+    #[test]
+    fn sort_key_works_from_context_focus() {
+        let mut app = make_app(1);
+        app.browser_focus = BrowserFocus::Context;
+
+        app.handle_key(KeyCode::Char('s'), KeyModifiers::NONE);
+
+        assert_eq!(app.sort_mode, ImageSortMode::Modified);
+    }
+
+    #[test]
+    fn search_mode_keeps_s_as_query_text() {
+        let mut app = make_app_with_names(&["sample.png"]);
+
+        app.handle_key(KeyCode::Char('/'), KeyModifiers::NONE);
+        app.handle_key(KeyCode::Char('s'), KeyModifiers::NONE);
+
+        assert_eq!(app.sort_mode, ImageSortMode::Name);
+        assert_eq!(app.search.as_ref().unwrap().query, "s");
+    }
+
+    #[test]
+    fn empty_directory_can_cycle_sort_mode() {
+        let mut app = make_app(0);
+
+        app.handle_key(KeyCode::Char('s'), KeyModifiers::NONE);
+
+        assert_eq!(app.sort_mode, ImageSortMode::Modified);
+        assert_eq!(app.selected, 0);
+        assert_eq!(app.sort_label(), "修改时间");
+    }
+
+    #[test]
+    fn entering_directory_keeps_current_sort_mode() {
+        let dir = tempdir().unwrap();
+        let child = dir.path().join("child");
+        fs::create_dir(&child).unwrap();
+        fs::write(child.join("small.png"), b"1").unwrap();
+        fs::write(child.join("large.png"), b"123456789").unwrap();
+
+        let mut app = make_app(0);
+        app.sort_mode = ImageSortMode::Size;
+        app.enter_directory(child);
+
+        assert_eq!(app.sort_mode, ImageSortMode::Size);
+        assert_eq!(image_names(&app), vec!["large.png", "small.png"]);
+    }
+
+    #[test]
+    fn old_generation_load_results_are_discarded_after_sort() {
+        let (mut app, done_tx) = make_app_with_load_done(2);
+        let generation = app.directory_generation;
+
+        app.handle_key(KeyCode::Char('s'), KeyModifiers::NONE);
+        done_tx
+            .send(LoadResult {
+                idx: 0,
+                path: PathBuf::from("img000.png"),
+                size: LoadSize::Thumbnail { w: 1, h: 1 },
+                generation,
+                content: LoadContent::Thumbnail(make_protocol()),
+                dims: Some((1, 1)),
+            })
+            .unwrap();
+        app.collect_loads();
+
+        assert!(app.protocol_cache.is_empty());
     }
 
     #[test]
@@ -2766,6 +3042,7 @@ mod tests {
                 path: PathBuf::from(name),
                 filename: name.to_string(),
                 file_size: 0,
+                modified_at: None,
             })
             .collect();
         let (tx, _rx) = std::sync::mpsc::channel::<LoadRequest>();

@@ -100,6 +100,7 @@ mod tests {
             path: image_path,
             filename: "sample.png".to_string(),
             file_size: 6,
+            modified_at: None,
         }];
         let (tx, _rx) = std::sync::mpsc::channel::<LoadRequest>();
         let (_tx2, rx2) = std::sync::mpsc::channel::<LoadResult>();

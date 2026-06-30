@@ -51,32 +51,60 @@ impl Lang {
         }
     }
 
-    pub fn browser_prompt_lines(&self, name: &str, selected: usize, total: usize) -> Vec<String> {
+    pub fn browser_prompt_lines(
+        &self,
+        name: &str,
+        selected: usize,
+        total: usize,
+        sort_label: &str,
+    ) -> Vec<String> {
         match self {
             Lang::Zh => vec![
-                format!(" 文件     {} [{}/{}]", name, selected, total),
+                format!(
+                    " 文件     {} [{}/{}]   排列 {}",
+                    name, selected, total, sort_label
+                ),
                 " 导航     ←→↑↓ 导航   PgUp/PgDown/Space 翻页   Home/End 首尾".to_string(),
-                " 操作     Enter 全屏   Tab 切换面板   / 搜索   L 切换语言   q 退出".to_string(),
+                " 操作     Enter 全屏   Tab 切换面板   / 搜索   s 排列   L 切换语言   q 退出"
+                    .to_string(),
             ],
             Lang::En => vec![
-                format!(" File     {} [{}/{}]", name, selected, total),
+                format!(
+                    " File     {} [{}/{}]   Sort {}",
+                    name, selected, total, sort_label
+                ),
                 " Move     ←→↑↓ Nav   PgUp/PgDown/Space Page   Home/End First/Last".to_string(),
-                " Action   Enter View   Tab Focus   / Search   L Language   q Quit".to_string(),
+                " Action   Enter View   Tab Focus   / Search   s Sort   L Language   q Quit"
+                    .to_string(),
             ],
         }
     }
 
-    pub fn context_prompt_lines(&self, name: &str, selected: usize, total: usize) -> Vec<String> {
+    pub fn context_prompt_lines(
+        &self,
+        name: &str,
+        selected: usize,
+        total: usize,
+        sort_label: &str,
+    ) -> Vec<String> {
         match self {
             Lang::Zh => vec![
-                format!(" 文件夹   {} [{}/{}]", name, selected, total),
+                format!(
+                    " 文件夹   {} [{}/{}]   排列 {}",
+                    name, selected, total, sort_label
+                ),
                 " 导航     ↑↓ 选择   Home/End 首尾   ← 上一级".to_string(),
-                " 操作     →/Enter 进入文件夹   Tab 切换面板   L 切换语言   q 退出".to_string(),
+                " 操作     →/Enter 进入文件夹   Tab 切换面板   s 排列   L 切换语言   q 退出"
+                    .to_string(),
             ],
             Lang::En => vec![
-                format!(" Folder   {} [{}/{}]", name, selected, total),
+                format!(
+                    " Folder   {} [{}/{}]   Sort {}",
+                    name, selected, total, sort_label
+                ),
                 " Move     ↑↓ Select   Home/End First/Last   ← Parent".to_string(),
-                " Action   →/Enter Open Folder   Tab Focus   L Language   q Quit".to_string(),
+                " Action   →/Enter Open Folder   Tab Focus   s Sort   L Language   q Quit"
+                    .to_string(),
             ],
         }
     }
@@ -240,8 +268,11 @@ mod tests {
             assert!(!lang.title_gallery().is_empty());
             assert!(!lang.title_info().is_empty());
             assert!(!lang.empty_folder_context().is_empty());
-            assert_eq!(lang.browser_prompt_lines("test.png", 1, 10).len(), 3);
-            assert_eq!(lang.context_prompt_lines("photos", 1, 3).len(), 3);
+            assert_eq!(
+                lang.browser_prompt_lines("test.png", 1, 10, "Name").len(),
+                3
+            );
+            assert_eq!(lang.context_prompt_lines("photos", 1, 3, "Name").len(), 3);
             assert_eq!(lang.search_prompt_lines(1, 5, true).len(), 3);
             assert_eq!(lang.fullscreen_prompt_lines("test.png", 1, 10, "").len(), 3);
             assert!(!lang.loading_text().is_empty());
@@ -267,12 +298,12 @@ mod tests {
             Lang::En.empty_folder_context()
         );
         assert_ne!(
-            Lang::Zh.browser_prompt_lines("a", 1, 5),
-            Lang::En.browser_prompt_lines("a", 1, 5)
+            Lang::Zh.browser_prompt_lines("a", 1, 5, "名称"),
+            Lang::En.browser_prompt_lines("a", 1, 5, "Name")
         );
         assert_ne!(
-            Lang::Zh.context_prompt_lines("a", 1, 5),
-            Lang::En.context_prompt_lines("a", 1, 5)
+            Lang::Zh.context_prompt_lines("a", 1, 5, "名称"),
+            Lang::En.context_prompt_lines("a", 1, 5, "Name")
         );
         assert_ne!(
             Lang::Zh.search_prompt_lines(1, 5, true),

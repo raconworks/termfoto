@@ -210,6 +210,7 @@ mod tests {
                 path: PathBuf::from(name),
                 filename: name.to_string(),
                 file_size: 0,
+                modified_at: None,
             })
             .collect()
     }

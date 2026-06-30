@@ -150,6 +150,7 @@ impl<'a> Widget for BrowserView<'a> {
                         .saturating_add(1)
                         .min(self.app.images.len()),
                     self.app.images.len(),
+                    self.app.sort_label(),
                 ),
                 BrowserFocus::Context => {
                     let context_name = context_entries
@@ -163,6 +164,7 @@ impl<'a> Widget for BrowserView<'a> {
                             .saturating_add(1)
                             .min(context_entries.len()),
                         context_entries.len(),
+                        self.app.sort_label(),
                     )
                 }
             };
@@ -413,6 +415,7 @@ mod tests {
             path: image_path,
             filename: "sample.png".to_string(),
             file_size: 6,
+            modified_at: None,
         }];
         let (tx, _rx) = std::sync::mpsc::channel::<LoadRequest>();
         let (_tx2, rx2) = std::sync::mpsc::channel::<LoadResult>();
@@ -570,6 +573,8 @@ mod tests {
         let text = buffer_text(&buf);
         assert!(!text.contains("old.png"));
         assert!(text.contains("File      [0/0]"));
+        assert!(text.contains("Sort Name"));
+        assert!(text.contains("s Sort"));
     }
 
     #[test]
@@ -589,6 +594,8 @@ mod tests {
         let text = buffer_text(&buf);
         assert!(text.contains("Folder"));
         assert!(text.contains("Open Folder"));
+        assert!(text.contains("Sort Name"));
+        assert!(text.contains("s Sort"));
 
         app.handle_key(
             crossterm::event::KeyCode::Char('/'),
@@ -605,5 +612,6 @@ mod tests {
         let text = buffer_text(&buf);
         assert!(text.contains("Cycle"));
         assert!(!text.contains("Open Folder"));
+        assert!(!text.contains("s Sort"));
     }
 }

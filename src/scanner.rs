@@ -1,9 +1,12 @@
 use std::path::{Path, PathBuf};
+use std::time::SystemTime;
 
+#[derive(Debug, Clone)]
 pub struct ImageEntry {
     pub path: PathBuf,
     pub filename: String,
     pub file_size: u64,
+    pub modified_at: Option<SystemTime>,
 }
 
 const SUPPORTED_EXTENSIONS: &[&str] = &[
@@ -28,11 +31,14 @@ pub fn scan_directory(dir: &Path) -> anyhow::Result<Vec<ImageEntry>> {
                 .unwrap_or_default()
                 .to_string_lossy()
                 .into_owned();
-            let file_size = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
+            let metadata = std::fs::metadata(&path).ok();
+            let file_size = metadata.as_ref().map(|m| m.len()).unwrap_or(0);
+            let modified_at = metadata.and_then(|m| m.modified().ok());
             ImageEntry {
                 path,
                 filename,
                 file_size,
+                modified_at,
             }
         })
         .collect();
@@ -109,6 +115,18 @@ mod tests {
         let entries = scan_directory(dir.path()).unwrap();
         let names: Vec<&str> = entries.iter().map(|e| e.filename.as_str()).collect();
         assert_eq!(names, vec!["apple.png", "mango.png", "zebra.png"]);
+    }
+
+    #[test]
+    fn test_scan_directory_populates_metadata() {
+        let dir = tempdir().unwrap();
+        create_fake_png(dir.path(), "photo.png");
+
+        let entries = scan_directory(dir.path()).unwrap();
+
+        assert_eq!(entries.len(), 1);
+        assert!(entries[0].file_size > 0);
+        assert!(entries[0].modified_at.is_some());
     }
 
     #[test]
