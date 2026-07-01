@@ -10,7 +10,7 @@
 [![npm](https://img.shields.io/npm/dt/termfoto?label=npm)](https://www.npmjs.com/package/termfoto)
 [![license](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 
-![termfoto demo](assets/demo.gif)
+![termfoto demo](assets/demo.png)
 
 ## ✨ Features
 
