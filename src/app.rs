@@ -27,12 +27,39 @@ use crate::ui::search::{SearchAction, SearchState};
 
 const MAX_ANIMATION_FRAMES: usize = 120;
 const DEFAULT_FRAME_DELAY: Duration = Duration::from_millis(100);
-const MIN_FRAME_DELAY: Duration = Duration::from_millis(20);
+const MIN_FRAME_DELAY: Duration = Duration::from_millis(33);
 
 #[derive(Clone)]
 pub struct AnimationFrame {
     pub protocol: Protocol,
     pub delay: Duration,
+}
+
+#[derive(Clone)]
+pub struct AnimationContent {
+    pub frames: Vec<AnimationFrame>,
+    pub complete: bool,
+    pub estimated_bytes: usize,
+}
+
+impl AnimationContent {
+    fn empty() -> Self {
+        Self {
+            frames: Vec::new(),
+            complete: false,
+            estimated_bytes: 0,
+        }
+    }
+
+    #[cfg(test)]
+    fn complete(frames: Vec<AnimationFrame>, font_size: FontSize) -> Self {
+        let estimated_bytes = animation_frames_estimated_bytes(&frames, font_size);
+        Self {
+            frames,
+            complete: true,
+            estimated_bytes,
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -44,7 +71,7 @@ pub struct StaticContent {
 #[derive(Clone)]
 pub enum FullscreenContent {
     Static(StaticContent),
-    Animation(Vec<AnimationFrame>),
+    Animation(AnimationContent),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -76,6 +103,9 @@ pub struct LoadResult {
 enum LoadContent {
     Thumbnail(Protocol),
     Original(FullscreenContent),
+    AnimationStarted { dims: (u32, u32) },
+    AnimationFrame { index: usize, frame: AnimationFrame },
+    AnimationFinished { complete: bool },
     Skipped,
 }
 
@@ -88,13 +118,20 @@ pub struct LoadControl {
 struct LoadControlState {
     generation: u64,
     thumbnail_interest: Option<ThumbnailInterest>,
-    original_interest: HashSet<ImageCacheKey>,
+    original_interest: Option<OriginalInterest>,
 }
 
 struct ThumbnailInterest {
     w: u16,
     h: u16,
     keys: HashSet<ImageCacheKey>,
+}
+
+struct OriginalInterest {
+    w: u16,
+    h: u16,
+    selected: Option<ImageCacheKey>,
+    prefetch: HashSet<ImageCacheKey>,
 }
 
 impl LoadControl {
@@ -108,7 +145,7 @@ impl LoadControl {
         let mut state = self.inner.lock().unwrap();
         state.generation = generation;
         state.thumbnail_interest = None;
-        state.original_interest.clear();
+        state.original_interest = None;
     }
 
     fn update_thumbnail_interest<I>(&self, generation: u64, w: u16, h: u16, keys: I)
@@ -130,19 +167,30 @@ impl LoadControl {
         state.thumbnail_interest = None;
     }
 
-    fn update_original_interest<I>(&self, generation: u64, keys: I)
-    where
+    fn update_original_interest<I>(
+        &self,
+        generation: u64,
+        w: u16,
+        h: u16,
+        selected: Option<ImageCacheKey>,
+        prefetch: I,
+    ) where
         I: IntoIterator<Item = ImageCacheKey>,
     {
         let mut state = self.inner.lock().unwrap();
         ensure_load_generation(&mut state, generation);
-        state.original_interest = keys.into_iter().collect();
+        state.original_interest = Some(OriginalInterest {
+            w,
+            h,
+            selected,
+            prefetch: prefetch.into_iter().collect(),
+        });
     }
 
     fn clear_original_interest(&self, generation: u64) {
         let mut state = self.inner.lock().unwrap();
         ensure_load_generation(&mut state, generation);
-        state.original_interest.clear();
+        state.original_interest = None;
     }
 
     fn remove_interest_key(&self, generation: u64, key: &ImageCacheKey) {
@@ -151,7 +199,12 @@ impl LoadControl {
         if let Some(interest) = state.thumbnail_interest.as_mut() {
             interest.keys.remove(key);
         }
-        state.original_interest.remove(key);
+        if let Some(interest) = state.original_interest.as_mut() {
+            if interest.selected.as_ref() == Some(key) {
+                interest.selected = None;
+            }
+            interest.prefetch.remove(key);
+        }
     }
 
     fn allows(&self, req: &LoadRequest) -> bool {
@@ -166,7 +219,18 @@ impl LoadControl {
                     interest.w == *w && interest.h == *h && interest.keys.contains(&req.key)
                 })
             }
-            LoadSize::Original => state.original_interest.contains(&req.key),
+            LoadSize::Original { w, h, kind } => {
+                state.original_interest.as_ref().is_some_and(|interest| {
+                    interest.w == *w
+                        && interest.h == *h
+                        && match kind {
+                            OriginalLoadKind::Selected => {
+                                interest.selected.as_ref() == Some(&req.key)
+                            }
+                            OriginalLoadKind::Prefetch => interest.prefetch.contains(&req.key),
+                        }
+                })
+            }
         }
     }
 }
@@ -181,7 +245,7 @@ fn ensure_load_generation(state: &mut LoadControlState, generation: u64) {
     if state.generation != generation {
         state.generation = generation;
         state.thumbnail_interest = None;
-        state.original_interest.clear();
+        state.original_interest = None;
     }
 }
 
@@ -330,6 +394,8 @@ pub struct App {
     fullscreen_protocol_key: Option<RenderKey>,
     fullscreen_original_cache: LruCache<ImageCacheKey, CachedOriginal>,
     fullscreen_original_cache_bytes: usize,
+    animation_cache: LruCache<AnimationCacheKey, CachedAnimation>,
+    animation_cache_bytes: usize,
     fullscreen_render_cache: LruCache<RenderKey, Protocol>,
     render_tx: Sender<RenderRequest>,
     render_rx: Receiver<RenderResult>,
@@ -356,6 +422,7 @@ const ZOOM_STEP: f32 = 0.10;
 const ZOOM_MIN: f32 = 1.0;
 const ZOOM_MAX: f32 = 10.0;
 const FULLSCREEN_ORIGINAL_CACHE_BYTES: usize = 128 * 1024 * 1024;
+const ANIMATION_CACHE_BYTES: usize = 96 * 1024 * 1024;
 const FULLSCREEN_RENDER_CACHE_SIZE: usize = 8;
 const INTERACTIVE_SETTLE_DELAY: Duration = Duration::from_millis(120);
 const DIRECT_FINAL_RENDER_PIXELS: u64 = 1_000_000;
@@ -413,10 +480,26 @@ impl RenderKey {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct AnimationCacheKey {
+    image_key: ImageCacheKey,
+    viewport_w: u16,
+    viewport_h: u16,
+    font_w: u16,
+    font_h: u16,
+}
+
 #[derive(Clone)]
 struct CachedOriginal {
     image: Arc<image::RgbaImage>,
     bytes: usize,
+}
+
+#[derive(Clone)]
+struct CachedAnimation {
+    content: AnimationContent,
+    bytes: usize,
+    dims: Option<(u32, u32)>,
 }
 
 struct RenderRequest {
@@ -626,6 +709,8 @@ impl App {
             fullscreen_protocol_key: None,
             fullscreen_original_cache: LruCache::unbounded(),
             fullscreen_original_cache_bytes: 0,
+            animation_cache: LruCache::unbounded(),
+            animation_cache_bytes: 0,
             fullscreen_render_cache: LruCache::new(
                 NonZeroUsize::new(FULLSCREEN_RENDER_CACHE_SIZE).unwrap(),
             ),
@@ -841,8 +926,6 @@ impl App {
                 self.zoom = 1.0;
                 self.pan_x = 0;
                 self.pan_y = 0;
-                self.fullscreen_image_w = 0;
-                self.fullscreen_image_h = 0;
                 self.prepare_fullscreen_selection();
             }
         }
@@ -1433,8 +1516,6 @@ impl App {
             self.zoom = 1.0;
             self.pan_x = 0;
             self.pan_y = 0;
-            self.fullscreen_image_w = 0;
-            self.fullscreen_image_h = 0;
             self.prepare_fullscreen_selection();
         }
     }
@@ -1446,8 +1527,6 @@ impl App {
             self.zoom = 1.0;
             self.pan_x = 0;
             self.pan_y = 0;
-            self.fullscreen_image_w = 0;
-            self.fullscreen_image_h = 0;
             self.prepare_fullscreen_selection();
         }
     }
@@ -1463,33 +1542,43 @@ impl App {
         self.render_settle_deadline = None;
         self.fullscreen_protocol_key = None;
         self.render_generation = self.render_generation.wrapping_add(1);
+        self.clear_pending_original_requests();
     }
 
     fn prepare_fullscreen_selection(&mut self) {
         self.update_fullscreen_original_interest();
-        if self.show_cached_fullscreen_original(Instant::now()) {
+        if self.show_cached_fullscreen_content(Instant::now()) {
             self.fullscreen_pending = self.current_fullscreen_protocol().is_none();
         } else {
             self.fullscreen_pending = true;
-            self.request_load(self.selected, LoadSize::Original);
+            if let Some(size) = self.current_original_load_size(OriginalLoadKind::Selected) {
+                self.request_load(self.selected, size);
+            }
         }
         self.prefetch_fullscreen_neighbors();
     }
 
     fn update_fullscreen_original_interest(&self) {
-        self.load_control
-            .update_original_interest(self.directory_generation, self.fullscreen_interest_keys());
+        let Some((w, h)) = self.current_fullscreen_viewport() else {
+            self.load_control
+                .clear_original_interest(self.directory_generation);
+            return;
+        };
+        self.load_control.update_original_interest(
+            self.directory_generation,
+            w,
+            h,
+            self.current_selected_cache_key(),
+            self.fullscreen_prefetch_keys(),
+        );
     }
 
-    fn fullscreen_interest_keys(&self) -> Vec<ImageCacheKey> {
+    fn fullscreen_prefetch_keys(&self) -> Vec<ImageCacheKey> {
         if self.images.is_empty() || self.selected >= self.images.len() {
             return Vec::new();
         }
 
-        let mut keys = Vec::with_capacity(3);
-        if let Some(key) = self.image_cache_key_for_slot(self.selected) {
-            keys.push(key);
-        }
+        let mut keys = Vec::with_capacity(2);
         if self.selected > 0 {
             if let Some(key) = self.image_cache_key_for_slot(self.selected - 1) {
                 keys.push(key);
@@ -1503,23 +1592,37 @@ impl App {
         keys
     }
 
-    fn show_cached_fullscreen_original(&mut self, now: Instant) -> bool {
+    fn show_cached_fullscreen_content(&mut self, now: Instant) -> bool {
         let Some(key) = self.current_selected_cache_key() else {
             return false;
         };
-        let Some(image) = self.cached_fullscreen_original(&key) else {
+        if let Some(image) = self.cached_fullscreen_original(&key) {
+            let dims = Some((image.width(), image.height()));
+            self.set_fullscreen_content_for_key(
+                FullscreenContent::Static(StaticContent {
+                    protocol: None,
+                    original: image,
+                }),
+                dims,
+                now,
+                Some(key),
+            );
+            return true;
+        }
+
+        let Some(cache_key) = self.current_animation_cache_key_for_image_key(key.clone()) else {
             return false;
         };
-        let dims = Some((image.width(), image.height()));
+        let Some((content, dims)) = self.cached_animation(&cache_key) else {
+            return false;
+        };
         self.set_fullscreen_content_for_key(
-            FullscreenContent::Static(StaticContent {
-                protocol: None,
-                original: image,
-            }),
+            FullscreenContent::Animation(content),
             dims,
             now,
             Some(key),
         );
+        self.fullscreen_pending = false;
         true
     }
 
@@ -1527,12 +1630,28 @@ impl App {
         if self.images.is_empty() {
             return;
         }
+        let Some(size) = self.current_original_load_size(OriginalLoadKind::Prefetch) else {
+            return;
+        };
         if self.selected > 0 {
-            self.request_load(self.selected - 1, LoadSize::Original);
+            self.request_load(self.selected - 1, size.clone());
         }
         if self.selected + 1 < self.images.len() {
-            self.request_load(self.selected + 1, LoadSize::Original);
+            self.request_load(self.selected + 1, size);
         }
+    }
+
+    fn current_fullscreen_viewport(&self) -> Option<(u16, u16)> {
+        if self.fullscreen_image_w == 0 || self.fullscreen_image_h == 0 {
+            None
+        } else {
+            Some((self.fullscreen_image_w, self.fullscreen_image_h))
+        }
+    }
+
+    fn current_original_load_size(&self, kind: OriginalLoadKind) -> Option<LoadSize> {
+        let (w, h) = self.current_fullscreen_viewport()?;
+        Some(LoadSize::Original { w, h, kind })
     }
 
     #[cfg(test)]
@@ -1559,7 +1678,10 @@ impl App {
         self.pan_y = 0;
         let is_static = matches!(&content, FullscreenContent::Static(_));
         self.fullscreen_next_frame_at = match &content {
-            FullscreenContent::Animation(frames) => frames.first().map(|frame| now + frame.delay),
+            FullscreenContent::Animation(animation) if animation.frames.len() >= 2 => {
+                animation.frames.first().map(|frame| now + frame.delay)
+            }
+            FullscreenContent::Animation(_) => None,
             FullscreenContent::Static(_) => None,
         };
         self.fullscreen_content = Some(content);
@@ -1579,18 +1701,29 @@ impl App {
         let changed = self.fullscreen_image_w != width || self.fullscreen_image_h != height;
         self.fullscreen_image_w = width;
         self.fullscreen_image_h = height;
-        if changed && matches!(self.fullscreen_content, Some(FullscreenContent::Static(_))) {
-            self.clamp_pan();
-            self.mark_render_dirty(RenderDirtyReason::ContentOrViewport);
+        if changed && self.state == AppState::Fullscreen {
+            self.update_fullscreen_original_interest();
+            match self.fullscreen_content {
+                Some(FullscreenContent::Static(_)) => {
+                    self.clamp_pan();
+                    self.mark_render_dirty(RenderDirtyReason::ContentOrViewport);
+                }
+                Some(FullscreenContent::Animation(_)) => {
+                    self.reset_fullscreen_content();
+                    self.prepare_fullscreen_selection();
+                }
+                None => self.prepare_fullscreen_selection(),
+            }
         }
     }
 
     pub fn current_fullscreen_protocol(&self) -> Option<&Protocol> {
         match self.fullscreen_content.as_ref()? {
             FullscreenContent::Static(sc) => sc.protocol.as_ref(),
-            FullscreenContent::Animation(frames) => frames
+            FullscreenContent::Animation(animation) => animation
+                .frames
                 .get(self.fullscreen_frame_idx)
-                .or_else(|| frames.first())
+                .or_else(|| animation.frames.first())
                 .map(|frame| &frame.protocol),
         }
     }
@@ -1613,9 +1746,10 @@ impl App {
             return false;
         }
 
-        let Some(FullscreenContent::Animation(frames)) = self.fullscreen_content.as_ref() else {
+        let Some(FullscreenContent::Animation(animation)) = self.fullscreen_content.as_ref() else {
             return false;
         };
+        let frames = &animation.frames;
         if frames.len() < 2 {
             return false;
         }
@@ -1657,12 +1791,38 @@ impl App {
                 dims,
                 ..
             } = result;
-            self.requested.remove(&(key.clone(), size.clone()));
+            if load_content_is_terminal(&content) {
+                self.requested.remove(&(key.clone(), size.clone()));
+            }
             if generation != self.directory_generation {
                 continue;
             }
             match content {
                 LoadContent::Skipped => continue,
+                LoadContent::AnimationStarted { dims } => {
+                    if !self.current_selected_stream_matches(&key, &size) {
+                        continue;
+                    }
+                    self.set_fullscreen_content_for_key(
+                        FullscreenContent::Animation(AnimationContent::empty()),
+                        Some(dims),
+                        now,
+                        Some(key),
+                    );
+                    self.fullscreen_pending = true;
+                }
+                LoadContent::AnimationFrame { index, frame } => {
+                    if !self.current_selected_stream_matches(&key, &size) {
+                        continue;
+                    }
+                    self.push_fullscreen_animation_frame(index, frame, now);
+                }
+                LoadContent::AnimationFinished { complete } => {
+                    if !self.current_selected_stream_matches(&key, &size) {
+                        continue;
+                    }
+                    self.finish_fullscreen_animation(complete);
+                }
                 LoadContent::Original(content) => match content {
                     FullscreenContent::Static(sc) => {
                         self.insert_fullscreen_original(key.clone(), Arc::clone(&sc.original));
@@ -1681,12 +1841,12 @@ impl App {
                             self.fullscreen_pending = true;
                         }
                     }
-                    FullscreenContent::Animation(frames) => {
+                    FullscreenContent::Animation(animation) => {
                         if self.state == AppState::Fullscreen
                             && self.current_selected_cache_key().as_ref() == Some(&key)
                         {
                             self.set_fullscreen_content_for_key(
-                                FullscreenContent::Animation(frames),
+                                FullscreenContent::Animation(animation),
                                 dims,
                                 now,
                                 Some(key),
@@ -1703,6 +1863,62 @@ impl App {
                     self.insert_cache(key, proto);
                 }
             }
+        }
+    }
+
+    fn current_selected_stream_matches(&self, key: &ImageCacheKey, size: &LoadSize) -> bool {
+        self.state == AppState::Fullscreen
+            && self.current_selected_cache_key().as_ref() == Some(key)
+            && matches!(
+                size,
+                LoadSize::Original {
+                    w,
+                    h,
+                    kind: OriginalLoadKind::Selected,
+                } if *w == self.fullscreen_image_w && *h == self.fullscreen_image_h
+            )
+    }
+
+    fn push_fullscreen_animation_frame(
+        &mut self,
+        index: usize,
+        frame: AnimationFrame,
+        now: Instant,
+    ) {
+        let font_size = self.picker.font_size();
+        let Some(FullscreenContent::Animation(animation)) = self.fullscreen_content.as_mut() else {
+            return;
+        };
+
+        if index == animation.frames.len() {
+            animation.estimated_bytes = animation
+                .estimated_bytes
+                .saturating_add(animation_frame_estimated_bytes(&frame, font_size));
+            animation.frames.push(frame);
+        } else if let Some(existing) = animation.frames.get_mut(index) {
+            *existing = frame;
+        } else {
+            return;
+        }
+
+        self.fullscreen_pending = false;
+        if animation.frames.len() >= 2 && self.fullscreen_next_frame_at.is_none() {
+            self.fullscreen_next_frame_at = animation.frames.first().map(|frame| now + frame.delay);
+        }
+    }
+
+    fn finish_fullscreen_animation(&mut self, complete: bool) {
+        let Some(FullscreenContent::Animation(animation)) = self.fullscreen_content.as_mut() else {
+            return;
+        };
+        animation.complete = complete;
+        if !complete || animation.frames.len() < 2 {
+            return;
+        }
+        let content = animation.clone();
+        let dims = self.fullscreen_dims;
+        if let Some(cache_key) = self.current_animation_cache_key() {
+            self.insert_animation_cache(cache_key, content, dims);
         }
     }
 
@@ -1943,6 +2159,87 @@ impl App {
         }
     }
 
+    fn current_animation_cache_key(&self) -> Option<AnimationCacheKey> {
+        self.current_animation_cache_key_for_image_key(self.current_selected_cache_key()?)
+    }
+
+    fn current_animation_cache_key_for_image_key(
+        &self,
+        image_key: ImageCacheKey,
+    ) -> Option<AnimationCacheKey> {
+        let (viewport_w, viewport_h) = self.current_fullscreen_viewport()?;
+        Some(animation_cache_key(
+            image_key,
+            viewport_w,
+            viewport_h,
+            self.picker.font_size(),
+        ))
+    }
+
+    fn animation_cache_key_for_size(
+        &self,
+        image_key: ImageCacheKey,
+        w: u16,
+        h: u16,
+    ) -> AnimationCacheKey {
+        animation_cache_key(image_key, w, h, self.picker.font_size())
+    }
+
+    fn cached_animation(
+        &mut self,
+        key: &AnimationCacheKey,
+    ) -> Option<(AnimationContent, Option<(u32, u32)>)> {
+        self.animation_cache
+            .get(key)
+            .map(|entry| (entry.content.clone(), entry.dims))
+    }
+
+    fn insert_animation_cache(
+        &mut self,
+        key: AnimationCacheKey,
+        content: AnimationContent,
+        dims: Option<(u32, u32)>,
+    ) {
+        if !content.complete || content.frames.len() < 2 {
+            return;
+        }
+        let bytes = content.estimated_bytes;
+        if bytes > ANIMATION_CACHE_BYTES {
+            return;
+        }
+        if let Some(old) = self.animation_cache.put(
+            key,
+            CachedAnimation {
+                content,
+                bytes,
+                dims,
+            },
+        ) {
+            self.animation_cache_bytes = self.animation_cache_bytes.saturating_sub(old.bytes);
+        }
+        self.animation_cache_bytes = self.animation_cache_bytes.saturating_add(bytes);
+        self.evict_animation_cache(self.current_animation_cache_key());
+    }
+
+    fn evict_animation_cache(&mut self, protect_key: Option<AnimationCacheKey>) {
+        let mut protected = Vec::new();
+        while self.animation_cache_bytes > ANIMATION_CACHE_BYTES
+            && self.animation_cache.len() + protected.len() > 1
+        {
+            let Some((key, entry)) = self.animation_cache.pop_lru() else {
+                break;
+            };
+            if Some(&key) == protect_key.as_ref() {
+                protected.push((key, entry));
+                continue;
+            }
+            self.animation_cache_bytes = self.animation_cache_bytes.saturating_sub(entry.bytes);
+        }
+        for (key, entry) in protected {
+            self.animation_cache.put(key, entry);
+        }
+    }
+
     fn insert_cache(&mut self, key: ImageCacheKey, proto: Protocol) {
         self.protocol_cache.put(key, proto);
     }
@@ -1958,6 +2255,18 @@ impl App {
             self.fullscreen_original_cache_bytes = self
                 .fullscreen_original_cache_bytes
                 .saturating_sub(old.bytes);
+        }
+
+        let animation_keys: Vec<AnimationCacheKey> = self
+            .animation_cache
+            .iter()
+            .filter(|(animation_key, _)| animation_key.image_key == *key)
+            .map(|(animation_key, _)| animation_key.clone())
+            .collect();
+        for animation_key in animation_keys {
+            if let Some(old) = self.animation_cache.pop(&animation_key) {
+                self.animation_cache_bytes = self.animation_cache_bytes.saturating_sub(old.bytes);
+            }
         }
 
         let render_keys: Vec<RenderKey> = self
@@ -1987,8 +2296,14 @@ impl App {
             return;
         };
         let key = ImageCacheKey::from_entry(entry);
-        if matches!(size, LoadSize::Original) && self.fullscreen_original_cache.contains(&key) {
-            return;
+        if let LoadSize::Original { w, h, .. } = &size {
+            if self.fullscreen_original_cache.contains(&key) {
+                return;
+            }
+            let animation_key = self.animation_cache_key_for_size(key.clone(), *w, *h);
+            if self.animation_cache.contains(&animation_key) {
+                return;
+            }
         }
         let requested_key = (key.clone(), size.clone());
         if self.requested.contains(&requested_key) {
@@ -2014,7 +2329,7 @@ impl App {
 
     fn clear_pending_original_requests(&mut self) {
         self.requested
-            .retain(|(_, size)| !matches!(size, LoadSize::Original));
+            .retain(|(_, size)| !matches!(size, LoadSize::Original { .. }));
     }
 
     pub(crate) fn update_thumbnail_interest<I>(&self, w: u16, h: u16, slots: I)
@@ -2489,8 +2804,18 @@ fn unique_overwrite_backup_path(target: &Path) -> io::Result<PathBuf> {
 pub enum LoadSize {
     /// Browser thumbnail at fixed cell dimensions.
     Thumbnail { w: u16, h: u16 },
-    /// Fullscreen: original image size computed from font metrics.
-    Original,
+    /// Fullscreen original load for a known viewport.
+    Original {
+        w: u16,
+        h: u16,
+        kind: OriginalLoadKind,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum OriginalLoadKind {
+    Selected,
+    Prefetch,
 }
 
 /// A request sent to the background loader.
@@ -2500,6 +2825,25 @@ pub struct LoadRequest {
     pub path: PathBuf,
     pub size: LoadSize,
     pub generation: u64,
+}
+
+struct OriginalRequestParts<'a> {
+    path: &'a Path,
+    key: ImageCacheKey,
+    generation: u64,
+    w: u16,
+    h: u16,
+    kind: OriginalLoadKind,
+}
+
+fn load_content_is_terminal(content: &LoadContent) -> bool {
+    matches!(
+        content,
+        LoadContent::Thumbnail(_)
+            | LoadContent::Original(_)
+            | LoadContent::AnimationFinished { .. }
+            | LoadContent::Skipped
+    )
 }
 
 fn frame_delay(delay: image::Delay) -> Duration {
@@ -2539,34 +2883,51 @@ fn static_rgba_content(img: image::RgbaImage) -> FullscreenContent {
     })
 }
 
+fn animation_frame_from_image_frame(
+    picker: &Picker,
+    frame: image::Frame,
+    size: Size,
+) -> Option<AnimationFrame> {
+    let delay = frame_delay(frame.delay());
+    let img = image::DynamicImage::ImageRgba8(frame.into_buffer());
+    let protocol = make_protocol(picker, img, size, ProtocolFilterType::Nearest)?;
+    Some(AnimationFrame { protocol, delay })
+}
+
+#[cfg(test)]
 fn animation_content_from_frames<I>(
     picker: &Picker,
     frames: I,
     size: Size,
-) -> Option<FullscreenContent>
+) -> Option<AnimationContent>
 where
     I: IntoIterator<Item = image::ImageResult<image::Frame>>,
 {
     let mut animation_frames = Vec::new();
     for frame in frames {
-        let frame = frame.ok()?;
         if animation_frames.len() == MAX_ANIMATION_FRAMES {
             return None;
         }
-        let delay = frame_delay(frame.delay());
-        let img = image::DynamicImage::ImageRgba8(frame.into_buffer());
-        let protocol = make_protocol(picker, img, size, ProtocolFilterType::Lanczos3)?;
-        animation_frames.push(AnimationFrame { protocol, delay });
+        let frame = frame.ok()?;
+        animation_frames.push(animation_frame_from_image_frame(picker, frame, size)?);
     }
 
     if animation_frames.len() >= 2 {
-        Some(FullscreenContent::Animation(animation_frames))
+        Some(AnimationContent {
+            estimated_bytes: animation_frames_estimated_bytes(
+                &animation_frames,
+                picker.font_size(),
+            ),
+            frames: animation_frames,
+            complete: true,
+        })
     } else {
         None
     }
 }
 
-fn try_decode_animation(picker: &Picker, path: &Path, size: Size) -> Option<FullscreenContent> {
+#[cfg(test)]
+fn try_decode_animation(picker: &Picker, path: &Path, size: Size) -> Option<AnimationContent> {
     let format = image::ImageFormat::from_path(path).ok()?;
     let file = File::open(path).ok()?;
     let reader = BufReader::new(file);
@@ -2589,6 +2950,189 @@ fn try_decode_animation(picker: &Picker, path: &Path, size: Size) -> Option<Full
     }
 }
 
+enum AnimationProbeOutcome {
+    StaticFallback,
+    Handled,
+}
+
+struct AnimationRequestContext<'a> {
+    picker: &'a Picker,
+    load_control: &'a LoadControl,
+    done_tx: &'a Sender<LoadResult>,
+    req: &'a LoadRequest,
+    dims: (u32, u32),
+    size: Size,
+    kind: OriginalLoadKind,
+}
+
+fn try_handle_animation_original(
+    ctx: &AnimationRequestContext<'_>,
+    path: &Path,
+) -> AnimationProbeOutcome {
+    let Some(format) = image::ImageFormat::from_path(path).ok() else {
+        return AnimationProbeOutcome::StaticFallback;
+    };
+    let Ok(file) = File::open(path) else {
+        return AnimationProbeOutcome::StaticFallback;
+    };
+    let reader = BufReader::new(file);
+
+    match format {
+        image::ImageFormat::Gif => {
+            let Ok(decoder) = image::codecs::gif::GifDecoder::new(reader) else {
+                return AnimationProbeOutcome::StaticFallback;
+            };
+            handle_animation_frames(ctx, decoder.into_frames())
+        }
+        image::ImageFormat::Png => {
+            let Ok(decoder) = image::codecs::png::PngDecoder::new(reader) else {
+                return AnimationProbeOutcome::StaticFallback;
+            };
+            let Ok(decoder) = decoder.apng() else {
+                return AnimationProbeOutcome::StaticFallback;
+            };
+            handle_animation_frames(ctx, decoder.into_frames())
+        }
+        image::ImageFormat::WebP => {
+            let Ok(decoder) = image::codecs::webp::WebPDecoder::new(reader) else {
+                return AnimationProbeOutcome::StaticFallback;
+            };
+            handle_animation_frames(ctx, decoder.into_frames())
+        }
+        _ => AnimationProbeOutcome::StaticFallback,
+    }
+}
+
+fn handle_animation_frames<I>(ctx: &AnimationRequestContext<'_>, frames: I) -> AnimationProbeOutcome
+where
+    I: IntoIterator<Item = image::ImageResult<image::Frame>>,
+{
+    let mut frames = frames.into_iter();
+    let Some(first) = frames.next() else {
+        return AnimationProbeOutcome::StaticFallback;
+    };
+    let Some(first) = first
+        .ok()
+        .and_then(|frame| animation_frame_from_image_frame(ctx.picker, frame, ctx.size))
+    else {
+        return AnimationProbeOutcome::StaticFallback;
+    };
+    if !ctx.load_control.allows(ctx.req) {
+        let _ = ctx.done_tx.send(skipped_load_result(ctx.req.clone()));
+        return AnimationProbeOutcome::Handled;
+    }
+
+    let Some(second) = frames.next() else {
+        return AnimationProbeOutcome::StaticFallback;
+    };
+    let Some(second) = second
+        .ok()
+        .and_then(|frame| animation_frame_from_image_frame(ctx.picker, frame, ctx.size))
+    else {
+        return AnimationProbeOutcome::StaticFallback;
+    };
+    if !ctx.load_control.allows(ctx.req) {
+        let _ = ctx.done_tx.send(skipped_load_result(ctx.req.clone()));
+        return AnimationProbeOutcome::Handled;
+    }
+
+    if ctx.kind == OriginalLoadKind::Prefetch {
+        let _ = ctx.done_tx.send(skipped_load_result(ctx.req.clone()));
+        return AnimationProbeOutcome::Handled;
+    }
+
+    if !send_animation_started(ctx.done_tx, ctx.req, ctx.dims) {
+        return AnimationProbeOutcome::Handled;
+    }
+    if !send_animation_frame(ctx.done_tx, ctx.req, 0, first) {
+        return AnimationProbeOutcome::Handled;
+    }
+    if !ctx.load_control.allows(ctx.req) {
+        let _ = send_animation_finished(ctx.done_tx, ctx.req, false);
+        return AnimationProbeOutcome::Handled;
+    }
+    if !send_animation_frame(ctx.done_tx, ctx.req, 1, second) {
+        return AnimationProbeOutcome::Handled;
+    }
+
+    for (frame_count, frame) in (2usize..).zip(frames) {
+        if !ctx.load_control.allows(ctx.req) {
+            let _ = send_animation_finished(ctx.done_tx, ctx.req, false);
+            return AnimationProbeOutcome::Handled;
+        }
+        if frame_count == MAX_ANIMATION_FRAMES {
+            let _ = send_animation_finished(ctx.done_tx, ctx.req, false);
+            return AnimationProbeOutcome::Handled;
+        }
+        let Some(frame) = frame
+            .ok()
+            .and_then(|frame| animation_frame_from_image_frame(ctx.picker, frame, ctx.size))
+        else {
+            let _ = send_animation_finished(ctx.done_tx, ctx.req, false);
+            return AnimationProbeOutcome::Handled;
+        };
+        if !send_animation_frame(ctx.done_tx, ctx.req, frame_count, frame) {
+            return AnimationProbeOutcome::Handled;
+        }
+    }
+
+    if !ctx.load_control.allows(ctx.req) {
+        let _ = send_animation_finished(ctx.done_tx, ctx.req, false);
+        return AnimationProbeOutcome::Handled;
+    }
+    let _ = send_animation_finished(ctx.done_tx, ctx.req, true);
+    AnimationProbeOutcome::Handled
+}
+
+fn send_animation_started(
+    done_tx: &Sender<LoadResult>,
+    req: &LoadRequest,
+    dims: (u32, u32),
+) -> bool {
+    done_tx
+        .send(LoadResult {
+            key: req.key.clone(),
+            size: req.size.clone(),
+            generation: req.generation,
+            content: LoadContent::AnimationStarted { dims },
+            dims: None,
+        })
+        .is_ok()
+}
+
+fn send_animation_frame(
+    done_tx: &Sender<LoadResult>,
+    req: &LoadRequest,
+    index: usize,
+    frame: AnimationFrame,
+) -> bool {
+    done_tx
+        .send(LoadResult {
+            key: req.key.clone(),
+            size: req.size.clone(),
+            generation: req.generation,
+            content: LoadContent::AnimationFrame { index, frame },
+            dims: None,
+        })
+        .is_ok()
+}
+
+fn send_animation_finished(
+    done_tx: &Sender<LoadResult>,
+    req: &LoadRequest,
+    complete: bool,
+) -> bool {
+    done_tx
+        .send(LoadResult {
+            key: req.key.clone(),
+            size: req.size.clone(),
+            generation: req.generation,
+            content: LoadContent::AnimationFinished { complete },
+            dims: None,
+        })
+        .is_ok()
+}
+
 fn zoom_percent(zoom: f32) -> u16 {
     let zoom = normalized_zoom(zoom);
     (zoom * 100.0).round().clamp(1.0, u16::MAX as f32) as u16
@@ -2596,6 +3140,38 @@ fn zoom_percent(zoom: f32) -> u16 {
 
 fn rgba_bytes(image: &image::RgbaImage) -> usize {
     image.len()
+}
+
+fn animation_cache_key(
+    image_key: ImageCacheKey,
+    viewport_w: u16,
+    viewport_h: u16,
+    font_size: FontSize,
+) -> AnimationCacheKey {
+    AnimationCacheKey {
+        image_key,
+        viewport_w: viewport_w.max(1),
+        viewport_h: viewport_h.max(1),
+        font_w: font_size.width.max(1),
+        font_h: font_size.height.max(1),
+    }
+}
+
+#[cfg(test)]
+fn animation_frames_estimated_bytes(frames: &[AnimationFrame], font_size: FontSize) -> usize {
+    frames
+        .iter()
+        .map(|frame| animation_frame_estimated_bytes(frame, font_size))
+        .sum()
+}
+
+fn animation_frame_estimated_bytes(frame: &AnimationFrame, font_size: FontSize) -> usize {
+    let size = frame.protocol.size();
+    usize::from(size.width.max(1))
+        .saturating_mul(usize::from(size.height.max(1)))
+        .saturating_mul(usize::from(font_size.width.max(1)))
+        .saturating_mul(usize::from(font_size.height.max(1)))
+        .saturating_mul(4)
 }
 
 fn spawn_render_worker(picker: Picker) -> (Sender<RenderRequest>, Receiver<RenderResult>) {
@@ -2730,7 +3306,7 @@ pub fn spawn_image_loader(
         while let Ok(req) = load_rx.recv() {
             let routed = match &req.size {
                 LoadSize::Thumbnail { .. } => thumb_tx.send(req),
-                LoadSize::Original => original_tx.send(req),
+                LoadSize::Original { .. } => original_tx.send(req),
             };
             if routed.is_err() {
                 break;
@@ -2773,23 +3349,36 @@ fn spawn_loader_workers(
                 }
             };
 
-            if let Some(result) = process_load_request_with_control(&picker, &load_control, req) {
-                let _ = done_tx.send(result);
-            }
+            process_load_request_with_control_to_sender(&picker, &load_control, req, &done_tx);
         });
     }
 }
 
+#[cfg(test)]
 fn process_load_request_with_control(
     picker: &Picker,
     load_control: &LoadControl,
     req: LoadRequest,
 ) -> Option<LoadResult> {
+    let (done_tx, done_rx) = std::sync::mpsc::channel::<LoadResult>();
+    process_load_request_with_control_to_sender(picker, load_control, req, &done_tx);
+    done_rx.try_recv().ok()
+}
+
+fn process_load_request_with_control_to_sender(
+    picker: &Picker,
+    load_control: &LoadControl,
+    req: LoadRequest,
+    done_tx: &Sender<LoadResult>,
+) {
     if !load_control.allows(&req) {
-        return Some(skipped_load_result(req));
+        let _ = done_tx.send(skipped_load_result(req));
+        return;
     }
 
-    process_load_request(picker, req)
+    if let Some(result) = process_load_request(picker, load_control, req, done_tx) {
+        let _ = done_tx.send(result);
+    }
 }
 
 fn skipped_load_result(req: LoadRequest) -> LoadResult {
@@ -2809,7 +3398,12 @@ fn skipped_load_result(req: LoadRequest) -> LoadResult {
     }
 }
 
-fn process_load_request(picker: &Picker, req: LoadRequest) -> Option<LoadResult> {
+fn process_load_request(
+    picker: &Picker,
+    load_control: &LoadControl,
+    req: LoadRequest,
+    done_tx: &Sender<LoadResult>,
+) -> Option<LoadResult> {
     let LoadRequest {
         key,
         path,
@@ -2821,7 +3415,19 @@ fn process_load_request(picker: &Picker, req: LoadRequest) -> Option<LoadResult>
         LoadSize::Thumbnail { w, h } => {
             process_thumbnail_request(picker, path.as_path(), key, generation, w, h)
         }
-        LoadSize::Original => process_original_request(picker, path.as_path(), key, generation),
+        LoadSize::Original { w, h, kind } => process_original_request(
+            picker,
+            load_control,
+            done_tx,
+            OriginalRequestParts {
+                path: path.as_path(),
+                key,
+                generation,
+                w,
+                h,
+                kind,
+            },
+        ),
     }
 }
 
@@ -2852,29 +3458,55 @@ fn process_thumbnail_request(
 
 fn process_original_request(
     picker: &Picker,
-    path: &Path,
-    key: ImageCacheKey,
-    generation: u64,
+    load_control: &LoadControl,
+    done_tx: &Sender<LoadResult>,
+    parts: OriginalRequestParts<'_>,
 ) -> Option<LoadResult> {
+    let OriginalRequestParts {
+        path,
+        key,
+        generation,
+        w,
+        h,
+        kind,
+    } = parts;
+    let size = LoadSize::Original { w, h, kind };
+    let req = LoadRequest {
+        key: key.clone(),
+        path: path.to_path_buf(),
+        size: size.clone(),
+        generation,
+    };
     let dims = image::image_dimensions(path).ok()?;
-    let font_size = picker.font_size();
-    let nat_w = dims.0.div_ceil(font_size.width as u32) as u16;
-    let nat_h = dims.1.div_ceil(font_size.height as u32) as u16;
-    let protocol_size = Size::new(nat_w.max(1), nat_h.max(1));
+    let protocol_size = Size::new(w.max(1), h.max(1));
 
-    let content = if should_probe_animation(path) {
-        try_decode_animation(picker, path, protocol_size)
-    } else {
-        None
-    };
-    let content = match content {
-        Some(content) => content,
-        None => static_rgba_content(image::open(path).ok()?.into_rgba8()),
-    };
+    if should_probe_animation(path) {
+        let animation_ctx = AnimationRequestContext {
+            picker,
+            load_control,
+            done_tx,
+            dims,
+            size: protocol_size,
+            kind,
+            req: &req,
+        };
+        match try_handle_animation_original(&animation_ctx, path) {
+            AnimationProbeOutcome::Handled => return None,
+            AnimationProbeOutcome::StaticFallback => {}
+        }
+    }
+
+    if !load_control.allows(&req) {
+        return Some(skipped_load_result(req));
+    }
+    let content = static_rgba_content(image::open(path).ok()?.into_rgba8());
+    if !load_control.allows(&req) {
+        return Some(skipped_load_result(req));
+    }
 
     Some(LoadResult {
         key,
-        size: LoadSize::Original,
+        size,
         generation,
         content: LoadContent::Original(content),
         dims: Some(dims),
@@ -3375,6 +4007,26 @@ mod tests {
         }
     }
 
+    fn animation_content(frames: Vec<AnimationFrame>) -> AnimationContent {
+        AnimationContent::complete(frames, Picker::halfblocks().font_size())
+    }
+
+    fn selected_original_size(w: u16, h: u16) -> LoadSize {
+        LoadSize::Original {
+            w,
+            h,
+            kind: OriginalLoadKind::Selected,
+        }
+    }
+
+    fn prefetch_original_size(w: u16, h: u16) -> LoadSize {
+        LoadSize::Original {
+            w,
+            h,
+            kind: OriginalLoadKind::Prefetch,
+        }
+    }
+
     fn make_image_frame(delay_ms: u32) -> image::Frame {
         image::Frame::from_parts(
             image::RgbaImage::new(1, 1),
@@ -3393,13 +4045,19 @@ mod tests {
         )
     }
 
+    fn write_gif(path: &Path, frames: Vec<image::Frame>) {
+        let file = File::create(path).unwrap();
+        let mut encoder = image::codecs::gif::GifEncoder::new(file);
+        encoder.encode_frames(frames).unwrap();
+    }
+
     fn install_test_animation(app: &mut App, now: Instant) {
         app.state = AppState::Fullscreen;
         app.set_fullscreen_content(
-            FullscreenContent::Animation(vec![
+            FullscreenContent::Animation(animation_content(vec![
                 make_animation_frame(100),
                 make_animation_frame(150),
-            ]),
+            ])),
             Some((1, 1)),
             now,
         );
@@ -3461,17 +4119,22 @@ mod tests {
         let (mut app, rx) = make_app_with_load_rx(1);
 
         app.enter_fullscreen();
+        app.set_fullscreen_viewport(80, 40);
         let first = rx.try_recv().unwrap();
-        assert_eq!(first.size, LoadSize::Original);
+        let original_size = selected_original_size(80, 40);
+        assert_eq!(first.size, original_size);
         let key = app_key(&app, 0);
-        assert!(app.requested.contains(&(key.clone(), LoadSize::Original)));
+        assert!(app
+            .requested
+            .contains(&(key.clone(), original_size.clone())));
 
         app.exit_fullscreen();
-        assert!(!app.requested.contains(&(key, LoadSize::Original)));
+        assert!(!app.requested.contains(&(key, original_size)));
 
         app.enter_fullscreen();
+        app.set_fullscreen_viewport(80, 40);
         let second = rx.try_recv().unwrap();
-        assert_eq!(second.size, LoadSize::Original);
+        assert_eq!(second.size, selected_original_size(80, 40));
         assert_eq!(second.generation, app.directory_generation);
         assert!(rx.try_recv().is_err());
     }
@@ -3481,7 +4144,7 @@ mod tests {
         let (mut app, rx) = make_app_with_load_rx(1);
 
         app.request_load(0, LoadSize::Thumbnail { w: 10, h: 5 });
-        app.request_load(0, LoadSize::Original);
+        app.request_load(0, selected_original_size(80, 40));
 
         let thumb = rx.try_recv().unwrap();
         assert_eq!(thumb.path, PathBuf::from("img000.png"));
@@ -3491,7 +4154,7 @@ mod tests {
         let original = rx.try_recv().unwrap();
         assert_eq!(original.path, PathBuf::from("img000.png"));
         assert_eq!(original.generation, app.directory_generation);
-        assert_eq!(original.size, LoadSize::Original);
+        assert_eq!(original.size, selected_original_size(80, 40));
     }
 
     #[test]
@@ -3512,12 +4175,13 @@ mod tests {
         let content = animation_content_from_frames(&picker, frames, Size::new(1, 1));
 
         match content {
-            Some(FullscreenContent::Animation(frames)) => {
-                assert_eq!(frames.len(), 2);
-                assert_eq!(frames[0].delay, Duration::from_millis(100));
-                assert_eq!(frames[1].delay, Duration::from_millis(150));
+            Some(animation) => {
+                assert!(animation.complete);
+                assert_eq!(animation.frames.len(), 2);
+                assert_eq!(animation.frames[0].delay, Duration::from_millis(100));
+                assert_eq!(animation.frames[1].delay, Duration::from_millis(150));
             }
-            _ => panic!("expected animation content"),
+            None => panic!("expected animation content"),
         }
     }
 
@@ -3542,6 +4206,14 @@ mod tests {
     }
 
     #[test]
+    fn tiny_frame_delay_clamps_to_33ms() {
+        assert_eq!(
+            frame_delay(image::Delay::from_numer_denom_ms(1, 1)),
+            Duration::from_millis(33)
+        );
+    }
+
+    #[test]
     fn tiny_gif_decodes_to_animation_content() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("tiny.gif");
@@ -3560,13 +4232,13 @@ mod tests {
         let content = try_decode_animation(&picker, &path, Size::new(1, 1));
 
         match content {
-            Some(FullscreenContent::Animation(frames)) => assert_eq!(frames.len(), 2),
-            _ => panic!("expected animated GIF content"),
+            Some(animation) => assert_eq!(animation.frames.len(), 2),
+            None => panic!("expected animated GIF content"),
         }
     }
 
     #[test]
-    fn process_original_request_returns_animation_for_gif() {
+    fn selected_original_request_streams_animation_for_gif() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("animated.gif");
         {
@@ -3581,17 +4253,300 @@ mod tests {
         }
 
         let picker = Picker::halfblocks();
-        let result = process_original_request(&picker, &path, path_key(&path), 11).unwrap();
+        let control = LoadControl::new();
+        let size = selected_original_size(4, 2);
+        control.update_original_interest(
+            11,
+            4,
+            2,
+            Some(path_key(&path)),
+            Vec::<ImageCacheKey>::new(),
+        );
+        let (done_tx, done_rx) = std::sync::mpsc::channel::<LoadResult>();
+        process_load_request_with_control_to_sender(
+            &picker,
+            &control,
+            LoadRequest {
+                key: path_key(&path),
+                path: path.clone(),
+                size: size.clone(),
+                generation: 11,
+            },
+            &done_tx,
+        );
 
-        assert_eq!(result.size, LoadSize::Original);
-        assert_eq!(result.generation, 11);
-        assert_eq!(result.dims, Some((1, 1)));
-        match result.content {
-            LoadContent::Original(FullscreenContent::Animation(frames)) => {
-                assert_eq!(frames.len(), 2);
-            }
-            _ => panic!("expected animated original content"),
+        let started = done_rx.try_recv().unwrap();
+        assert_eq!(started.size, size);
+        assert_eq!(started.generation, 11);
+        assert!(matches!(
+            started.content,
+            LoadContent::AnimationStarted { dims: (1, 1) }
+        ));
+        let first = done_rx.try_recv().unwrap();
+        assert!(matches!(
+            first.content,
+            LoadContent::AnimationFrame { index: 0, .. }
+        ));
+        let second = done_rx.try_recv().unwrap();
+        assert!(matches!(
+            second.content,
+            LoadContent::AnimationFrame { index: 1, .. }
+        ));
+        let finished = done_rx.try_recv().unwrap();
+        assert!(matches!(
+            finished.content,
+            LoadContent::AnimationFinished { complete: true }
+        ));
+    }
+
+    #[test]
+    fn single_frame_gif_falls_back_to_static_original() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("single.gif");
+        write_gif(&path, vec![make_colored_image_frame(100, [255, 0, 0, 255])]);
+
+        let picker = Picker::halfblocks();
+        let control = LoadControl::new();
+        let size = selected_original_size(4, 2);
+        control.update_original_interest(
+            21,
+            4,
+            2,
+            Some(path_key(&path)),
+            Vec::<ImageCacheKey>::new(),
+        );
+        let (done_tx, done_rx) = std::sync::mpsc::channel::<LoadResult>();
+        process_load_request_with_control_to_sender(
+            &picker,
+            &control,
+            LoadRequest {
+                key: path_key(&path),
+                path: path.clone(),
+                size: size.clone(),
+                generation: 21,
+            },
+            &done_tx,
+        );
+
+        let result = done_rx.try_recv().unwrap();
+        assert_eq!(result.size, size);
+        assert!(matches!(
+            result.content,
+            LoadContent::Original(FullscreenContent::Static(_))
+        ));
+        assert!(done_rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn prefetch_skips_real_animation_after_probe() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("animated.gif");
+        write_gif(
+            &path,
+            vec![
+                make_colored_image_frame(100, [255, 0, 0, 255]),
+                make_colored_image_frame(120, [0, 255, 0, 255]),
+            ],
+        );
+
+        let picker = Picker::halfblocks();
+        let control = LoadControl::new();
+        let key = path_key(&path);
+        let size = prefetch_original_size(4, 2);
+        control.update_original_interest(31, 4, 2, None, [key.clone()]);
+        let (done_tx, done_rx) = std::sync::mpsc::channel::<LoadResult>();
+        process_load_request_with_control_to_sender(
+            &picker,
+            &control,
+            LoadRequest {
+                key,
+                path: path.clone(),
+                size: size.clone(),
+                generation: 31,
+            },
+            &done_tx,
+        );
+
+        let result = done_rx.try_recv().unwrap();
+        assert_skipped(result, 0, size, 31);
+        assert!(done_rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn prefetch_static_original_decodes_to_rgba() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("static.png");
+        write_png(&path);
+
+        let picker = Picker::halfblocks();
+        let control = LoadControl::new();
+        let key = path_key(&path);
+        let size = prefetch_original_size(4, 2);
+        control.update_original_interest(41, 4, 2, None, [key.clone()]);
+        let (done_tx, done_rx) = std::sync::mpsc::channel::<LoadResult>();
+        process_load_request_with_control_to_sender(
+            &picker,
+            &control,
+            LoadRequest {
+                key,
+                path: path.clone(),
+                size: size.clone(),
+                generation: 41,
+            },
+            &done_tx,
+        );
+
+        let result = done_rx.try_recv().unwrap();
+        assert_eq!(result.size, size);
+        assert!(matches!(
+            result.content,
+            LoadContent::Original(FullscreenContent::Static(_))
+        ));
+    }
+
+    #[test]
+    fn streaming_animation_first_frame_displays_before_finish() {
+        let (mut app, done_tx) = make_app_with_load_done(1);
+        let key = app_key(&app, 0);
+        let size = selected_original_size(80, 40);
+        app.state = AppState::Fullscreen;
+        app.fullscreen_image_w = 80;
+        app.fullscreen_image_h = 40;
+        app.fullscreen_pending = true;
+        app.requested.insert((key.clone(), size.clone()));
+
+        done_tx
+            .send(LoadResult {
+                key: key.clone(),
+                size: size.clone(),
+                generation: app.directory_generation,
+                content: LoadContent::AnimationStarted { dims: (1, 1) },
+                dims: None,
+            })
+            .unwrap();
+        done_tx
+            .send(LoadResult {
+                key: key.clone(),
+                size: size.clone(),
+                generation: app.directory_generation,
+                content: LoadContent::AnimationFrame {
+                    index: 0,
+                    frame: make_animation_frame(100),
+                },
+                dims: None,
+            })
+            .unwrap();
+
+        app.collect_loads();
+
+        assert!(app.current_fullscreen_protocol().is_some());
+        assert!(!app.fullscreen_pending);
+        assert!(app.requested.contains(&(key, size)));
+    }
+
+    #[test]
+    fn complete_streaming_animation_writes_cache_and_clears_request() {
+        let (mut app, done_tx) = make_app_with_load_done(1);
+        let key = app_key(&app, 0);
+        let size = selected_original_size(80, 40);
+        app.state = AppState::Fullscreen;
+        app.fullscreen_image_w = 80;
+        app.fullscreen_image_h = 40;
+        app.requested.insert((key.clone(), size.clone()));
+
+        for content in [
+            LoadContent::AnimationStarted { dims: (1, 1) },
+            LoadContent::AnimationFrame {
+                index: 0,
+                frame: make_animation_frame(100),
+            },
+            LoadContent::AnimationFrame {
+                index: 1,
+                frame: make_animation_frame(120),
+            },
+            LoadContent::AnimationFinished { complete: true },
+        ] {
+            done_tx
+                .send(LoadResult {
+                    key: key.clone(),
+                    size: size.clone(),
+                    generation: app.directory_generation,
+                    content,
+                    dims: None,
+                })
+                .unwrap();
         }
+
+        app.collect_loads();
+
+        let cache_key = app.current_animation_cache_key().unwrap();
+        assert!(app.animation_cache.contains(&cache_key));
+        assert!(!app.requested.contains(&(key, size)));
+    }
+
+    #[test]
+    fn incomplete_streaming_animation_does_not_write_cache() {
+        let (mut app, done_tx) = make_app_with_load_done(1);
+        let key = app_key(&app, 0);
+        let size = selected_original_size(80, 40);
+        app.state = AppState::Fullscreen;
+        app.fullscreen_image_w = 80;
+        app.fullscreen_image_h = 40;
+        app.requested.insert((key.clone(), size.clone()));
+
+        for content in [
+            LoadContent::AnimationStarted { dims: (1, 1) },
+            LoadContent::AnimationFrame {
+                index: 0,
+                frame: make_animation_frame(100),
+            },
+            LoadContent::AnimationFrame {
+                index: 1,
+                frame: make_animation_frame(120),
+            },
+            LoadContent::AnimationFinished { complete: false },
+        ] {
+            done_tx
+                .send(LoadResult {
+                    key: key.clone(),
+                    size: size.clone(),
+                    generation: app.directory_generation,
+                    content,
+                    dims: None,
+                })
+                .unwrap();
+        }
+
+        app.collect_loads();
+
+        assert!(app.animation_cache.is_empty());
+        assert!(!app.requested.contains(&(key, size)));
+    }
+
+    #[test]
+    fn stale_animation_frame_after_viewport_change_is_discarded() {
+        let (mut app, done_tx) = make_app_with_load_done(1);
+        let key = app_key(&app, 0);
+        app.state = AppState::Fullscreen;
+        app.fullscreen_image_w = 81;
+        app.fullscreen_image_h = 40;
+
+        done_tx
+            .send(LoadResult {
+                key,
+                size: selected_original_size(80, 40),
+                generation: app.directory_generation,
+                content: LoadContent::AnimationFrame {
+                    index: 0,
+                    frame: make_animation_frame(100),
+                },
+                dims: None,
+            })
+            .unwrap();
+
+        app.collect_loads();
+
+        assert!(app.current_fullscreen_protocol().is_none());
     }
 
     #[test]
@@ -3603,9 +4558,32 @@ mod tests {
             .unwrap();
 
         let picker = Picker::halfblocks();
-        let result = process_original_request(&picker, &path, path_key(&path), 13).unwrap();
+        let control = LoadControl::new();
+        let size = selected_original_size(4, 2);
+        control.update_original_interest(
+            13,
+            4,
+            2,
+            Some(path_key(&path)),
+            Vec::<ImageCacheKey>::new(),
+        );
+        let (done_tx, _done_rx) = std::sync::mpsc::channel::<LoadResult>();
+        let result = process_original_request(
+            &picker,
+            &control,
+            &done_tx,
+            OriginalRequestParts {
+                path: &path,
+                key: path_key(&path),
+                generation: 13,
+                w: 4,
+                h: 2,
+                kind: OriginalLoadKind::Selected,
+            },
+        )
+        .unwrap();
 
-        assert_eq!(result.size, LoadSize::Original);
+        assert_eq!(result.size, size);
         assert_eq!(result.generation, 13);
         assert_eq!(result.dims, Some((3, 2)));
         match result.content {
@@ -3640,6 +4618,9 @@ mod tests {
         match result.content {
             LoadContent::Thumbnail(protocol) => assert!(protocol.size().width <= 8),
             LoadContent::Original(_) => panic!("expected thumbnail protocol"),
+            LoadContent::AnimationStarted { .. }
+            | LoadContent::AnimationFrame { .. }
+            | LoadContent::AnimationFinished { .. } => panic!("expected thumbnail protocol"),
             LoadContent::Skipped => panic!("expected thumbnail protocol"),
         }
     }
@@ -3660,12 +4641,12 @@ mod tests {
         let original = process_load_request_with_control(
             &picker,
             &control,
-            missing_load_request(0, LoadSize::Original, 1),
+            missing_load_request(0, selected_original_size(8, 4), 1),
         )
         .unwrap();
 
         assert_skipped(thumb, 0, thumb_size, 1);
-        assert_skipped(original, 0, LoadSize::Original, 1);
+        assert_skipped(original, 0, selected_original_size(8, 4), 1);
     }
 
     #[test]
@@ -3703,19 +4684,49 @@ mod tests {
     }
 
     #[test]
-    fn load_control_skips_original_outside_current_neighbors() {
+    fn load_control_skips_stale_original_viewport() {
         let picker = Picker::halfblocks();
         let control = LoadControl::new();
-        control.update_original_interest(0, [test_key("img004.png")]);
+        let size = selected_original_size(7, 4);
+        control.update_original_interest(
+            0,
+            8,
+            4,
+            Some(test_key("missing.png")),
+            Vec::<ImageCacheKey>::new(),
+        );
 
         let result = process_load_request_with_control(
             &picker,
             &control,
-            missing_load_request(2, LoadSize::Original, 0),
+            missing_load_request(0, size.clone(), 0),
         )
         .unwrap();
 
-        assert_skipped(result, 2, LoadSize::Original, 0);
+        assert_skipped(result, 0, size, 0);
+    }
+
+    #[test]
+    fn load_control_skips_original_outside_current_neighbors() {
+        let picker = Picker::halfblocks();
+        let control = LoadControl::new();
+        control.update_original_interest(
+            0,
+            8,
+            4,
+            Some(test_key("img004.png")),
+            Vec::<ImageCacheKey>::new(),
+        );
+        let size = selected_original_size(8, 4);
+
+        let result = process_load_request_with_control(
+            &picker,
+            &control,
+            missing_load_request(2, size.clone(), 0),
+        )
+        .unwrap();
+
+        assert_skipped(result, 2, size, 0);
     }
 
     #[test]
@@ -3725,7 +4736,13 @@ mod tests {
         write_png(&path);
         let picker = Picker::halfblocks();
         let control = LoadControl::new();
-        control.update_original_interest(0, [path_key(&path)]);
+        control.update_original_interest(
+            0,
+            8,
+            4,
+            Some(path_key(&path)),
+            Vec::<ImageCacheKey>::new(),
+        );
 
         let result = process_load_request_with_control(
             &picker,
@@ -3733,13 +4750,13 @@ mod tests {
             LoadRequest {
                 key: path_key(&path),
                 path: path.clone(),
-                size: LoadSize::Original,
+                size: selected_original_size(8, 4),
                 generation: 0,
             },
         )
         .unwrap();
 
-        assert_eq!(result.size, LoadSize::Original);
+        assert_eq!(result.size, selected_original_size(8, 4));
         assert_eq!(result.generation, 0);
         assert!(matches!(result.content, LoadContent::Original(_)));
     }
@@ -3939,6 +4956,92 @@ mod tests {
         assert!(app.fullscreen_original_cache_bytes <= FULLSCREEN_ORIGINAL_CACHE_BYTES);
         assert!(app.fullscreen_original_cache.contains(&app_key(&app, 0)));
         assert!(!app.fullscreen_original_cache.contains(&app_key(&app, 1)));
+    }
+
+    #[test]
+    fn animation_cache_hit_satisfies_fullscreen_without_request() {
+        let (mut app, rx) = make_app_with_load_rx(1);
+        let key = app_key(&app, 0);
+        app.state = AppState::Fullscreen;
+        app.fullscreen_image_w = 80;
+        app.fullscreen_image_h = 40;
+        let cache_key = app.current_animation_cache_key().unwrap();
+        app.insert_animation_cache(
+            cache_key,
+            animation_content(vec![make_animation_frame(100), make_animation_frame(120)]),
+            Some((1, 1)),
+        );
+
+        app.prepare_fullscreen_selection();
+
+        assert!(app.current_fullscreen_protocol().is_some());
+        assert!(!app.fullscreen_pending);
+        assert!(rx.try_recv().is_err());
+        assert_eq!(app.fullscreen_content_key, Some(key));
+    }
+
+    #[test]
+    fn oversized_animation_is_not_cached() {
+        let mut app = make_app(1);
+        app.state = AppState::Fullscreen;
+        app.fullscreen_image_w = 80;
+        app.fullscreen_image_h = 40;
+        let cache_key = app.current_animation_cache_key().unwrap();
+        let mut content =
+            animation_content(vec![make_animation_frame(100), make_animation_frame(120)]);
+        content.estimated_bytes = ANIMATION_CACHE_BYTES + 1;
+
+        app.insert_animation_cache(cache_key, content, Some((1, 1)));
+
+        assert!(app.animation_cache.is_empty());
+        assert_eq!(app.animation_cache_bytes, 0);
+    }
+
+    #[test]
+    fn animation_cache_evicts_lru_entries_to_budget() {
+        let mut app = make_app(3);
+        app.state = AppState::Fullscreen;
+        app.selected = 2;
+        app.fullscreen_image_w = 80;
+        app.fullscreen_image_h = 40;
+
+        for idx in 0..3 {
+            let key = animation_cache_key(app_key(&app, idx), 80, 40, app.picker.font_size());
+            let mut content =
+                animation_content(vec![make_animation_frame(100), make_animation_frame(120)]);
+            content.estimated_bytes = ANIMATION_CACHE_BYTES / 2;
+            app.insert_animation_cache(key, content, Some((1, 1)));
+        }
+
+        assert!(app.animation_cache_bytes <= ANIMATION_CACHE_BYTES);
+        assert_eq!(app.animation_cache.len(), 2);
+        assert!(!app.animation_cache.contains(&animation_cache_key(
+            app_key(&app, 0),
+            80,
+            40,
+            app.picker.font_size()
+        )));
+    }
+
+    #[test]
+    fn fullscreen_viewport_change_requests_new_animation_size() {
+        let (mut app, rx) = make_app_with_load_rx(1);
+        app.state = AppState::Fullscreen;
+        app.fullscreen_image_w = 80;
+        app.fullscreen_image_h = 40;
+        app.set_fullscreen_content(
+            FullscreenContent::Animation(animation_content(vec![
+                make_animation_frame(100),
+                make_animation_frame(120),
+            ])),
+            Some((1, 1)),
+            Instant::now(),
+        );
+
+        app.set_fullscreen_viewport(81, 40);
+
+        let request = rx.try_recv().unwrap();
+        assert_eq!(request.size, selected_original_size(81, 40));
     }
 
     #[test]
@@ -4812,6 +5915,10 @@ mod tests {
             pan_y: 0,
             quality: RenderQuality::Final,
         };
+        let deleted_animation_key =
+            animation_cache_key(deleted_key.clone(), 80, 40, app.picker.font_size());
+        let kept_animation_key =
+            animation_cache_key(kept_key.clone(), 80, 40, app.picker.font_size());
 
         app.protocol_cache.put(deleted_key.clone(), make_protocol());
         app.protocol_cache.put(kept_key.clone(), make_protocol());
@@ -4821,6 +5928,16 @@ mod tests {
             .insert((kept_key.clone(), LoadSize::Thumbnail { w: 1, h: 1 }));
         app.insert_fullscreen_original(deleted_key.clone(), Arc::new(image::RgbaImage::new(1, 1)));
         app.insert_fullscreen_original(kept_key.clone(), Arc::new(image::RgbaImage::new(1, 1)));
+        app.insert_animation_cache(
+            deleted_animation_key.clone(),
+            animation_content(vec![make_animation_frame(100), make_animation_frame(120)]),
+            Some((1, 1)),
+        );
+        app.insert_animation_cache(
+            kept_animation_key.clone(),
+            animation_content(vec![make_animation_frame(100), make_animation_frame(120)]),
+            Some((1, 1)),
+        );
         app.fullscreen_render_cache
             .put(deleted_render_key.clone(), make_protocol());
         app.fullscreen_render_cache
@@ -4835,6 +5952,8 @@ mod tests {
         assert!(app.requested.iter().any(|(key, _)| key == &kept_key));
         assert!(!app.fullscreen_original_cache.contains(&deleted_key));
         assert!(app.fullscreen_original_cache.contains(&kept_key));
+        assert!(!app.animation_cache.contains(&deleted_animation_key));
+        assert!(app.animation_cache.contains(&kept_animation_key));
         assert!(!app.fullscreen_render_cache.contains(&deleted_render_key));
         assert!(app.fullscreen_render_cache.contains(&kept_render_key));
     }
@@ -5024,6 +6143,7 @@ mod tests {
         let dir = tempdir().unwrap();
         write_png(&dir.path().join("old.png"));
         let (mut app, rx) = make_app_for_dir(dir.path(), 0, AppState::Fullscreen);
+        app.set_fullscreen_viewport(80, 40);
         while rx.try_recv().is_ok() {}
 
         app.handle_key(KeyCode::Char('r'), KeyModifiers::NONE);
@@ -5036,7 +6156,7 @@ mod tests {
 
         let request = rx.try_recv().unwrap();
         assert_eq!(request.path, dir.path().join("new.png"));
-        assert_eq!(request.size, LoadSize::Original);
+        assert_eq!(request.size, selected_original_size(80, 40));
         assert_eq!(request.generation, app.directory_generation);
     }
 
