@@ -145,6 +145,15 @@ impl LoadControl {
         state.original_interest.clear();
     }
 
+    fn remove_interest_key(&self, generation: u64, key: &ImageCacheKey) {
+        let mut state = self.inner.lock().unwrap();
+        ensure_load_generation(&mut state, generation);
+        if let Some(interest) = state.thumbnail_interest.as_mut() {
+            interest.keys.remove(key);
+        }
+        state.original_interest.remove(key);
+    }
+
     fn allows(&self, req: &LoadRequest) -> bool {
         let state = self.inner.lock().unwrap();
         if req.generation != state.generation {
@@ -239,6 +248,25 @@ impl RenameState {
     }
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub struct DeleteState {
+    pub origin: AppState,
+    pub path: PathBuf,
+    pub filename: String,
+    cache_key: ImageCacheKey,
+}
+
+impl DeleteState {
+    fn new(entry: &ImageEntry, origin: AppState) -> Self {
+        Self {
+            origin,
+            path: entry.path.clone(),
+            filename: entry.filename.clone(),
+            cache_key: ImageCacheKey::from_entry(entry),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ImageSortMode {
     Name,
@@ -288,6 +316,7 @@ pub struct App {
     pub requested: HashSet<(ImageCacheKey, LoadSize)>,
     pub search: Option<SearchState>,
     pub rename: Option<RenameState>,
+    pub delete: Option<DeleteState>,
     pub zoom: f32,
     pub pan_x: i16,
     pub pan_y: i16,
@@ -583,6 +612,7 @@ impl App {
             requested: HashSet::new(),
             search: None,
             rename: None,
+            delete: None,
             zoom: 1.0,
             pan_x: 0,
             pan_y: 0,
@@ -967,6 +997,12 @@ impl App {
         }
     }
 
+    pub fn delete_prompt_lines(&self) -> Option<Vec<String>> {
+        self.delete
+            .as_ref()
+            .map(|delete| self.lang.delete_prompt_lines(&delete.filename))
+    }
+
     fn set_status_message(&mut self, message: String) {
         self.status_message = Some((message, Instant::now() + Duration::from_secs(2)));
     }
@@ -981,6 +1017,38 @@ impl App {
             entry.filename.clone(),
             self.state.clone(),
         ));
+    }
+
+    fn start_delete_current(&mut self) {
+        let Some(entry) = self.images.get(self.selected) else {
+            self.set_status_message(self.lang.delete_no_image().to_string());
+            return;
+        };
+        self.delete = Some(DeleteState::new(entry, self.state.clone()));
+    }
+
+    fn handle_delete_key(&mut self, code: KeyCode) -> bool {
+        let Some(delete) = self.delete.take() else {
+            return false;
+        };
+
+        match code {
+            KeyCode::Char('y') | KeyCode::Char('Y') | KeyCode::Enter => {
+                match fs::remove_file(&delete.path) {
+                    Ok(()) => self.finish_delete_success(delete),
+                    Err(err) => {
+                        self.set_status_message(self.lang.delete_failed(&err.to_string()));
+                    }
+                }
+            }
+            KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc => {
+                self.set_status_message(self.lang.delete_cancelled().to_string());
+            }
+            _ => {
+                self.delete = Some(delete);
+            }
+        }
+        false
     }
 
     fn handle_rename_key(&mut self, code: KeyCode, modifiers: KeyModifiers) -> bool {
@@ -1068,6 +1136,64 @@ impl App {
                 None
             }
         }
+    }
+
+    fn finish_delete_success(&mut self, delete: DeleteState) {
+        let DeleteState {
+            path,
+            filename,
+            cache_key,
+            ..
+        } = delete;
+        let selected_path = self.selection_after_current_delete();
+        let favorite_remove_error = if self.favorites.is_favorite(&path) {
+            self.favorites
+                .remove(&path)
+                .err()
+                .map(|err| err.to_string())
+        } else {
+            None
+        };
+
+        self.search = None;
+        self.rename = None;
+        self.delete = None;
+        self.remove_deleted_image_cache(&cache_key);
+
+        match scan_directory(&self.image_dir) {
+            Ok(mut images) => {
+                sort_image_entries(&mut images, self.sort_mode);
+                self.directory_images = images;
+            }
+            Err(_) if self.gallery_mode == GalleryMode::Directory => {
+                self.set_status_message(self.lang.directory_error().to_string());
+                return;
+            }
+            Err(_) => {}
+        }
+
+        let skipped = self.rebuild_active_gallery(selected_path);
+        self.invalidate_active_gallery();
+        if let Some(error) = favorite_remove_error {
+            self.set_status_message(self.lang.favorite_save_failed(&error));
+        } else if skipped > 0 {
+            self.set_status_message(self.lang.favorite_missing_skipped(skipped));
+        } else if self.gallery_mode == GalleryMode::Favorites && self.images.is_empty() {
+            self.set_status_message(self.lang.favorite_none().to_string());
+        } else {
+            self.set_status_message(self.lang.delete_success(&filename));
+        }
+    }
+
+    fn selection_after_current_delete(&self) -> Option<PathBuf> {
+        self.images
+            .get(self.selected + 1)
+            .or_else(|| {
+                self.selected
+                    .checked_sub(1)
+                    .and_then(|idx| self.images.get(idx))
+            })
+            .map(|entry| entry.path.clone())
     }
 
     fn finish_rename_success(&mut self, original_path: PathBuf, target_path: PathBuf) {
@@ -1821,6 +1947,41 @@ impl App {
         self.protocol_cache.put(key, proto);
     }
 
+    fn remove_deleted_image_cache(&mut self, key: &ImageCacheKey) {
+        self.protocol_cache.pop(key);
+        self.requested
+            .retain(|(requested_key, _)| requested_key != key);
+        self.load_control
+            .remove_interest_key(self.directory_generation, key);
+
+        if let Some(old) = self.fullscreen_original_cache.pop(key) {
+            self.fullscreen_original_cache_bytes = self
+                .fullscreen_original_cache_bytes
+                .saturating_sub(old.bytes);
+        }
+
+        let render_keys: Vec<RenderKey> = self
+            .fullscreen_render_cache
+            .iter()
+            .filter(|(render_key, _)| render_key.image_key == *key)
+            .map(|(render_key, _)| render_key.clone())
+            .collect();
+        for render_key in render_keys {
+            self.fullscreen_render_cache.pop(&render_key);
+        }
+
+        if self
+            .fullscreen_protocol_key
+            .as_ref()
+            .is_some_and(|render_key| render_key.image_key == *key)
+        {
+            self.fullscreen_protocol_key = None;
+        }
+        if self.fullscreen_content_key.as_ref() == Some(key) {
+            self.reset_fullscreen_content();
+        }
+    }
+
     pub fn request_load(&mut self, idx: usize, size: LoadSize) {
         let Some(entry) = self.images.get(idx) else {
             return;
@@ -1962,6 +2123,9 @@ impl App {
 
     /// Handle a key event. Returns true if the app should quit.
     pub fn handle_key(&mut self, code: KeyCode, modifiers: KeyModifiers) -> bool {
+        if self.delete.is_some() {
+            return self.handle_delete_key(code);
+        }
         if self.rename.is_some() {
             return self.handle_rename_key(code, modifiers);
         }
@@ -2010,6 +2174,7 @@ impl App {
                             KeyCode::End => self.navigate_end(),
                             KeyCode::Enter => self.enter_fullscreen(),
                             KeyCode::Char('r') => self.start_rename_current(),
+                            KeyCode::Char('d') => self.start_delete_current(),
                             _ => {}
                         },
                         BrowserFocus::Context => match code {
@@ -2038,6 +2203,7 @@ impl App {
                 KeyCode::Char('-') => self.zoom_out(),
                 KeyCode::Char('0') => self.zoom_reset(),
                 KeyCode::Char('r') => self.start_rename_current(),
+                KeyCode::Char('d') => self.start_delete_current(),
                 KeyCode::Char('h') => self.pan_left(),
                 KeyCode::Char('l') => self.pan_right(),
                 KeyCode::Char('k') => self.pan_up(),
@@ -4479,6 +4645,198 @@ mod tests {
         assert_eq!(app.fullscreen_content_key, Some(key.clone()));
         assert!(app.fullscreen_original_cache.contains(&key));
         assert_eq!(app.render_generation, render_generation);
+    }
+
+    #[test]
+    fn delete_confirmation_can_cancel_in_browser() {
+        let dir = tempdir().unwrap();
+        write_png(&dir.path().join("a.png"));
+        write_png(&dir.path().join("b.png"));
+        let (mut app, _rx) = make_app_for_dir(dir.path(), 0, AppState::Browser);
+
+        app.handle_key(KeyCode::Char('d'), KeyModifiers::NONE);
+        assert!(app.delete.is_some());
+        app.handle_key(KeyCode::Char('n'), KeyModifiers::NONE);
+
+        assert!(app.delete.is_none());
+        assert!(dir.path().join("a.png").exists());
+        assert_eq!(image_names(&app), vec!["a.png", "b.png"]);
+
+        app.handle_key(KeyCode::Char('d'), KeyModifiers::NONE);
+        app.handle_key(KeyCode::Esc, KeyModifiers::NONE);
+
+        assert!(app.delete.is_none());
+        assert!(dir.path().join("a.png").exists());
+        assert_eq!(image_names(&app), vec!["a.png", "b.png"]);
+    }
+
+    #[test]
+    fn delete_confirm_removes_file_and_selects_adjacent_image() {
+        let dir = tempdir().unwrap();
+        for name in ["a.png", "b.png", "c.png"] {
+            write_png(&dir.path().join(name));
+        }
+        let (mut app, _rx) = make_app_for_dir(dir.path(), 1, AppState::Browser);
+
+        app.handle_key(KeyCode::Char('d'), KeyModifiers::NONE);
+        app.handle_key(KeyCode::Char('y'), KeyModifiers::NONE);
+
+        assert!(!dir.path().join("b.png").exists());
+        assert_eq!(image_names(&app), vec!["a.png", "c.png"]);
+        assert_eq!(app.images[app.selected].filename, "c.png");
+
+        app.handle_key(KeyCode::Char('d'), KeyModifiers::NONE);
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE);
+
+        assert!(!dir.path().join("c.png").exists());
+        assert_eq!(image_names(&app), vec!["a.png"]);
+        assert_eq!(app.images[app.selected].filename, "a.png");
+    }
+
+    #[test]
+    fn delete_shortcut_starts_only_from_gallery_or_fullscreen() {
+        let mut app = make_app_with_names(&["sample.png"]);
+        app.browser_focus = BrowserFocus::Context;
+        app.handle_key(KeyCode::Char('d'), KeyModifiers::NONE);
+        assert!(app.delete.is_none());
+
+        app.browser_focus = BrowserFocus::Gallery;
+        app.handle_key(KeyCode::Char('/'), KeyModifiers::NONE);
+        app.handle_key(KeyCode::Char('d'), KeyModifiers::NONE);
+        assert!(app.delete.is_none());
+        assert_eq!(app.search.as_ref().unwrap().query, "d");
+        app.handle_key(KeyCode::Esc, KeyModifiers::NONE);
+
+        app.handle_key(KeyCode::Char('r'), KeyModifiers::NONE);
+        app.handle_key(KeyCode::Char('d'), KeyModifiers::NONE);
+        assert!(app.delete.is_none());
+        assert!(app.rename.as_ref().unwrap().input.ends_with('d'));
+        app.handle_key(KeyCode::Esc, KeyModifiers::NONE);
+
+        app.state = AppState::Fullscreen;
+        app.handle_key(KeyCode::Char('d'), KeyModifiers::NONE);
+        assert!(app.delete.is_some());
+        assert_eq!(app.delete.as_ref().unwrap().origin, AppState::Fullscreen);
+    }
+
+    #[test]
+    fn fullscreen_delete_keeps_fullscreen_until_last_image() {
+        let dir = tempdir().unwrap();
+        write_png(&dir.path().join("a.png"));
+        write_png(&dir.path().join("b.png"));
+        let (mut app, rx) = make_app_for_dir(dir.path(), 0, AppState::Fullscreen);
+        while rx.try_recv().is_ok() {}
+
+        app.handle_key(KeyCode::Char('d'), KeyModifiers::NONE);
+        app.handle_key(KeyCode::Char('y'), KeyModifiers::NONE);
+
+        assert!(!dir.path().join("a.png").exists());
+        assert_eq!(app.state, AppState::Fullscreen);
+        assert_eq!(image_names(&app), vec!["b.png"]);
+        assert_eq!(app.selected, 0);
+
+        app.handle_key(KeyCode::Char('d'), KeyModifiers::NONE);
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE);
+
+        assert!(!dir.path().join("b.png").exists());
+        assert_eq!(app.state, AppState::Browser);
+        assert!(app.images.is_empty());
+    }
+
+    #[test]
+    fn delete_favorite_removes_favorite_record_and_empty_favorites_status() {
+        let dir = tempdir().unwrap();
+        write_png(&dir.path().join("a.png"));
+        let (mut app, _rx) = make_app_for_dir(dir.path(), 0, AppState::Browser);
+        isolate_favorites(&mut app, dir.path());
+        app.add_favorite_for_tests(&dir.path().join("a.png"), 10);
+        app.handle_key(KeyCode::Char('F'), KeyModifiers::NONE);
+
+        app.handle_key(KeyCode::Char('d'), KeyModifiers::NONE);
+        app.handle_key(KeyCode::Char('y'), KeyModifiers::NONE);
+
+        assert!(!dir.path().join("a.png").exists());
+        assert!(app.favorites.entries().is_empty());
+        assert_eq!(app.gallery_mode, GalleryMode::Favorites);
+        assert!(app.images.is_empty());
+        assert_eq!(app.browser_status_message().unwrap(), "No favorites");
+    }
+
+    #[test]
+    fn delete_failure_keeps_gallery_and_selection() {
+        let dir = tempdir().unwrap();
+        write_png(&dir.path().join("a.png"));
+        write_png(&dir.path().join("b.png"));
+        let (mut app, _rx) = make_app_for_dir(dir.path(), 0, AppState::Browser);
+
+        app.handle_key(KeyCode::Char('d'), KeyModifiers::NONE);
+        fs::remove_file(dir.path().join("a.png")).unwrap();
+        app.handle_key(KeyCode::Char('y'), KeyModifiers::NONE);
+
+        assert!(app.delete.is_none());
+        assert_eq!(image_names(&app), vec!["a.png", "b.png"]);
+        assert_eq!(app.selected, 0);
+        assert!(app
+            .browser_status_message()
+            .unwrap()
+            .starts_with("Delete failed:"));
+    }
+
+    #[test]
+    fn delete_removes_only_deleted_image_caches_and_requests() {
+        let dir = tempdir().unwrap();
+        write_png(&dir.path().join("a.png"));
+        write_png(&dir.path().join("b.png"));
+        let (mut app, _rx) = make_app_for_dir(dir.path(), 0, AppState::Browser);
+        let deleted_key = app_key(&app, 0);
+        let kept_key = app_key(&app, 1);
+        let deleted_render_key = RenderKey {
+            image_key: deleted_key.clone(),
+            viewport_w: 10,
+            viewport_h: 10,
+            font_w: 1,
+            font_h: 1,
+            zoom_percent: 100,
+            pan_x: 0,
+            pan_y: 0,
+            quality: RenderQuality::Final,
+        };
+        let kept_render_key = RenderKey {
+            image_key: kept_key.clone(),
+            viewport_w: 10,
+            viewport_h: 10,
+            font_w: 1,
+            font_h: 1,
+            zoom_percent: 100,
+            pan_x: 0,
+            pan_y: 0,
+            quality: RenderQuality::Final,
+        };
+
+        app.protocol_cache.put(deleted_key.clone(), make_protocol());
+        app.protocol_cache.put(kept_key.clone(), make_protocol());
+        app.requested
+            .insert((deleted_key.clone(), LoadSize::Thumbnail { w: 1, h: 1 }));
+        app.requested
+            .insert((kept_key.clone(), LoadSize::Thumbnail { w: 1, h: 1 }));
+        app.insert_fullscreen_original(deleted_key.clone(), Arc::new(image::RgbaImage::new(1, 1)));
+        app.insert_fullscreen_original(kept_key.clone(), Arc::new(image::RgbaImage::new(1, 1)));
+        app.fullscreen_render_cache
+            .put(deleted_render_key.clone(), make_protocol());
+        app.fullscreen_render_cache
+            .put(kept_render_key.clone(), make_protocol());
+
+        app.handle_key(KeyCode::Char('d'), KeyModifiers::NONE);
+        app.handle_key(KeyCode::Char('y'), KeyModifiers::NONE);
+
+        assert!(!app.protocol_cache.contains(&deleted_key));
+        assert!(app.protocol_cache.contains(&kept_key));
+        assert!(!app.requested.iter().any(|(key, _)| key == &deleted_key));
+        assert!(app.requested.iter().any(|(key, _)| key == &kept_key));
+        assert!(!app.fullscreen_original_cache.contains(&deleted_key));
+        assert!(app.fullscreen_original_cache.contains(&kept_key));
+        assert!(!app.fullscreen_render_cache.contains(&deleted_render_key));
+        assert!(app.fullscreen_render_cache.contains(&kept_render_key));
     }
 
     #[test]

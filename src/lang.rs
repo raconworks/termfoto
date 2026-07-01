@@ -72,7 +72,7 @@ impl Lang {
                     name, selected, total, sort_label
                 ),
                 " 导航     ←→↑↓ 导航   PgUp/PgDown/Space 翻页   Home/End 首尾".to_string(),
-                " 操作     Enter 全屏   Tab 切换面板   / 搜索   r 重命名   f 收藏   F 收藏视图   s 排列   L 切换语言   q 退出"
+                " 操作     Enter 全屏   Tab 切换面板   / 搜索   r 重命名   d 删除   f 收藏   F 收藏视图   s 排列   L 切换语言   q 退出"
                     .to_string(),
             ],
             Lang::En => vec![
@@ -81,7 +81,7 @@ impl Lang {
                     name, selected, total, sort_label
                 ),
                 " Move     ←→↑↓ Nav   PgUp/PgDown/Space Page   Home/End First/Last".to_string(),
-                " Action   Enter View   Tab Focus   / Search   r Rename   f Favorite   F Favorites   s Sort   L Language   q Quit"
+                " Action   Enter View  Tab Focus  / Search  s Sort  r Rename  d Delete  f Fav  F Favs  L Lang  q Quit"
                     .to_string(),
             ],
         }
@@ -92,13 +92,13 @@ impl Lang {
             Lang::Zh => vec![
                 format!(" 收藏视图 {} [{}/{}]", name, selected, total),
                 " 导航     ←→↑↓ 导航   PgUp/PgDown/Space 翻页   Home/End 首尾".to_string(),
-                " 操作     Enter 全屏   / 搜索   f 取消收藏   F 返回图库   L 切换语言   q 退出"
+                " 操作     Enter 全屏   / 搜索   d 删除   f 取消收藏   F 返回图库   L 切换语言   q 退出"
                     .to_string(),
             ],
             Lang::En => vec![
                 format!(" Favorites {} [{}/{}]", name, selected, total),
                 " Move     ←→↑↓ Nav   PgUp/PgDown/Space Page   Home/End First/Last".to_string(),
-                " Action   Enter View   / Search   f Unfavorite   F Gallery   L Language   q Quit"
+                " Action   Enter View   / Search   d Delete   f Unfav   F Gallery   L Lang   q Quit"
                     .to_string(),
             ],
         }
@@ -204,7 +204,7 @@ impl Lang {
                 format!(" 文件     {} [{}/{}]{}", name, selected, total, status),
                 " 视图     +/- 缩放   0 重置   hjkl 平移".to_string(),
                 format!(
-                    " 操作     ← → 切换图片   r 重命名   f 收藏   {}   Enter/Esc/q 返回   L 语言",
+                    " 操作     ← → 切换图片   r 重命名   d 删除   f 收藏   {}   Enter/Esc/q 返回   L 语言",
                     switch_label
                 ),
             ],
@@ -212,7 +212,7 @@ impl Lang {
                 format!(" File     {} [{}/{}]{}", name, selected, total, status),
                 " View     +/- Zoom   0 Reset   hjkl Pan".to_string(),
                 format!(
-                    " Action   ← → Prev/Next   r Rename   f Favorite   {}   Enter/Esc/q Back   L Language",
+                    " Action   ← → Prev/Next   r Rename   d Delete   f Fav   {}   Enter/Esc/q Back   L Lang",
                     switch_label
                 ),
             ],
@@ -258,6 +258,21 @@ impl Lang {
                 format!(" Rename   {} -> {}", original_name, target_name),
                 " Status   Target exists. Overwrite?".to_string(),
                 " Action   y Yes / n No".to_string(),
+            ],
+        }
+    }
+
+    pub fn delete_prompt_lines(&self, filename: &str) -> Vec<String> {
+        match self {
+            Lang::Zh => vec![
+                format!(" 删除     {}", filename),
+                " 状态     永久删除此图片？".to_string(),
+                " 操作     y/Enter 确认   n/Esc 取消".to_string(),
+            ],
+            Lang::En => vec![
+                format!(" Delete   {}", filename),
+                " Status   Permanently delete this image?".to_string(),
+                " Action   y/Enter Yes   n/Esc No".to_string(),
             ],
         }
     }
@@ -308,6 +323,34 @@ impl Lang {
         match self {
             Lang::Zh => format!("重命名失败: {}", error),
             Lang::En => format!("Rename failed: {}", error),
+        }
+    }
+
+    pub fn delete_no_image(&self) -> &'static str {
+        match self {
+            Lang::Zh => "没有可删除的图片",
+            Lang::En => "No image to delete",
+        }
+    }
+
+    pub fn delete_cancelled(&self) -> &'static str {
+        match self {
+            Lang::Zh => "已取消删除",
+            Lang::En => "Delete cancelled",
+        }
+    }
+
+    pub fn delete_success(&self, name: &str) -> String {
+        match self {
+            Lang::Zh => format!("已删除 {}", name),
+            Lang::En => format!("Deleted {}", name),
+        }
+    }
+
+    pub fn delete_failed(&self, error: &str) -> String {
+        match self {
+            Lang::Zh => format!("删除失败: {}", error),
+            Lang::En => format!("Delete failed: {}", error),
         }
     }
 
@@ -465,6 +508,7 @@ mod tests {
                     .len(),
                 3
             );
+            assert_eq!(lang.delete_prompt_lines("old.png").len(), 3);
             assert!(!lang.loading_text().is_empty());
             assert!(!lang.directory_error().is_empty());
             assert!(!lang.status_prompt_line("message").is_empty());
@@ -475,6 +519,10 @@ mod tests {
             assert!(!lang.rename_cancelled().is_empty());
             assert!(!lang.rename_success("new.png").is_empty());
             assert!(!lang.rename_failed("error").is_empty());
+            assert!(!lang.delete_no_image().is_empty());
+            assert!(!lang.delete_cancelled().is_empty());
+            assert!(!lang.delete_success("old.png").is_empty());
+            assert!(!lang.delete_failed("error").is_empty());
             assert!(!lang.favorite_badge().is_empty());
             assert!(!lang.favorite_added().is_empty());
             assert!(!lang.favorite_removed().is_empty());
@@ -530,6 +578,10 @@ mod tests {
             Lang::Zh.rename_overwrite_prompt_lines("a.png", "b.png"),
             Lang::En.rename_overwrite_prompt_lines("a.png", "b.png")
         );
+        assert_ne!(
+            Lang::Zh.delete_prompt_lines("a.png"),
+            Lang::En.delete_prompt_lines("a.png")
+        );
         assert_ne!(Lang::Zh.loading_text(), Lang::En.loading_text());
         assert_ne!(Lang::Zh.directory_error(), Lang::En.directory_error());
         assert_ne!(
@@ -551,6 +603,16 @@ mod tests {
         assert_ne!(
             Lang::Zh.rename_failed("error"),
             Lang::En.rename_failed("error")
+        );
+        assert_ne!(Lang::Zh.delete_no_image(), Lang::En.delete_no_image());
+        assert_ne!(Lang::Zh.delete_cancelled(), Lang::En.delete_cancelled());
+        assert_ne!(
+            Lang::Zh.delete_success("a.png"),
+            Lang::En.delete_success("a.png")
+        );
+        assert_ne!(
+            Lang::Zh.delete_failed("error"),
+            Lang::En.delete_failed("error")
         );
         assert_ne!(Lang::Zh.favorite_badge(), Lang::En.favorite_badge());
         assert_ne!(Lang::Zh.favorite_added(), Lang::En.favorite_added());

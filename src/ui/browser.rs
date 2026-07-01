@@ -139,7 +139,9 @@ impl<'a> Widget for BrowserView<'a> {
             render_gallery_slot(self.app, slot, col, row, &grid, search_matches, buf);
         }
 
-        if let Some(lines) = self.app.rename_prompt_lines() {
+        if let Some(lines) = self.app.delete_prompt_lines() {
+            render_prompt_lines(areas.prompt, &lines, buf);
+        } else if let Some(lines) = self.app.rename_prompt_lines() {
             render_prompt_lines(areas.prompt, &lines, buf);
         } else if let Some(ref search) = self.app.search {
             render_prompt_base(areas.prompt, buf);

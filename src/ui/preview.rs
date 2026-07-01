@@ -60,7 +60,9 @@ impl<'a> Widget for PreviewView<'a> {
         );
 
         // --- Status bar ---
-        if let Some(lines) = self.app.rename_prompt_lines() {
+        if let Some(lines) = self.app.delete_prompt_lines() {
+            render_prompt_lines(areas.prompt, &lines, buf);
+        } else if let Some(lines) = self.app.rename_prompt_lines() {
             render_prompt_lines(areas.prompt, &lines, buf);
         } else if let Some(entry) = self.app.images.get(self.app.selected) {
             let status = if self.app.fullscreen_pending {
@@ -77,6 +79,10 @@ impl<'a> Widget for PreviewView<'a> {
                 &status,
                 self.app.is_favorites_view(),
             );
+            let mut lines = lines;
+            if let Some(message) = self.app.browser_status_message() {
+                lines[0] = self.app.lang.status_prompt_line(&message);
+            }
             render_prompt_lines(areas.prompt, &lines, buf);
         }
     }
