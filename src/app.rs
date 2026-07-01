@@ -3,11 +3,13 @@ use std::fs::{self, File};
 use std::io::{self, BufReader};
 use std::num::NonZeroUsize;
 use std::path::{Path, PathBuf};
+#[cfg(test)]
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{
     mpsc::{Receiver, Sender},
     Arc, Mutex,
 };
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
 
 use crossterm::event::{KeyCode, KeyModifiers};
 use fast_image_resize as fir;
@@ -45,10 +47,26 @@ pub enum FullscreenContent {
     Animation(Vec<AnimationFrame>),
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct ImageCacheKey {
+    path: PathBuf,
+    file_size: u64,
+    modified_at: Option<SystemTime>,
+}
+
+impl ImageCacheKey {
+    fn from_entry(entry: &ImageEntry) -> Self {
+        Self {
+            path: FavoriteStore::normalize_path(&entry.path),
+            file_size: entry.file_size,
+            modified_at: entry.modified_at,
+        }
+    }
+}
+
 /// Channel payload for a completed background image load.
 pub struct LoadResult {
-    idx: usize,
-    path: PathBuf,
+    key: ImageCacheKey,
     size: LoadSize,
     generation: u64,
     content: LoadContent,
@@ -70,13 +88,13 @@ pub struct LoadControl {
 struct LoadControlState {
     generation: u64,
     thumbnail_interest: Option<ThumbnailInterest>,
-    original_interest: HashSet<usize>,
+    original_interest: HashSet<ImageCacheKey>,
 }
 
 struct ThumbnailInterest {
     w: u16,
     h: u16,
-    slots: HashSet<usize>,
+    keys: HashSet<ImageCacheKey>,
 }
 
 impl LoadControl {
@@ -93,16 +111,16 @@ impl LoadControl {
         state.original_interest.clear();
     }
 
-    fn update_thumbnail_interest<I>(&self, generation: u64, w: u16, h: u16, slots: I)
+    fn update_thumbnail_interest<I>(&self, generation: u64, w: u16, h: u16, keys: I)
     where
-        I: IntoIterator<Item = usize>,
+        I: IntoIterator<Item = ImageCacheKey>,
     {
         let mut state = self.inner.lock().unwrap();
         ensure_load_generation(&mut state, generation);
         state.thumbnail_interest = Some(ThumbnailInterest {
             w,
             h,
-            slots: slots.into_iter().collect(),
+            keys: keys.into_iter().collect(),
         });
     }
 
@@ -112,13 +130,13 @@ impl LoadControl {
         state.thumbnail_interest = None;
     }
 
-    fn update_original_interest<I>(&self, generation: u64, slots: I)
+    fn update_original_interest<I>(&self, generation: u64, keys: I)
     where
-        I: IntoIterator<Item = usize>,
+        I: IntoIterator<Item = ImageCacheKey>,
     {
         let mut state = self.inner.lock().unwrap();
         ensure_load_generation(&mut state, generation);
-        state.original_interest = slots.into_iter().collect();
+        state.original_interest = keys.into_iter().collect();
     }
 
     fn clear_original_interest(&self, generation: u64) {
@@ -136,10 +154,10 @@ impl LoadControl {
         match &req.size {
             LoadSize::Thumbnail { w, h } => {
                 state.thumbnail_interest.as_ref().is_some_and(|interest| {
-                    interest.w == *w && interest.h == *h && interest.slots.contains(&req.idx)
+                    interest.w == *w && interest.h == *h && interest.keys.contains(&req.key)
                 })
             }
-            LoadSize::Original => state.original_interest.contains(&req.idx),
+            LoadSize::Original => state.original_interest.contains(&req.key),
         }
     }
 }
@@ -253,8 +271,9 @@ pub struct App {
     pub context_scroll: usize,
     context_visible_rows: usize,
     pub directory_generation: u64,
-    pub protocol_cache: LruCache<usize, Protocol>,
+    pub protocol_cache: LruCache<ImageCacheKey, Protocol>,
     pub fullscreen_content: Option<FullscreenContent>,
+    fullscreen_content_key: Option<ImageCacheKey>,
     fullscreen_frame_idx: usize,
     fullscreen_next_frame_at: Option<Instant>,
     pub fullscreen_pending: bool,
@@ -266,7 +285,7 @@ pub struct App {
     pub thumb_w: u16,
     pub thumb_h: u16,
     pub visible_rows: usize,
-    pub requested: HashSet<(u64, usize, LoadSize)>,
+    pub requested: HashSet<(ImageCacheKey, LoadSize)>,
     pub search: Option<SearchState>,
     pub rename: Option<RenameState>,
     pub zoom: f32,
@@ -280,7 +299,7 @@ pub struct App {
     render_generation: u64,
     render_settle_deadline: Option<Instant>,
     fullscreen_protocol_key: Option<RenderKey>,
-    fullscreen_original_cache: LruCache<usize, CachedOriginal>,
+    fullscreen_original_cache: LruCache<ImageCacheKey, CachedOriginal>,
     fullscreen_original_cache_bytes: usize,
     fullscreen_render_cache: LruCache<RenderKey, Protocol>,
     render_tx: Sender<RenderRequest>,
@@ -341,7 +360,7 @@ enum RenderDirtyReason {
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 struct RenderKey {
-    idx: usize,
+    image_key: ImageCacheKey,
     viewport_w: u16,
     viewport_h: u16,
     font_w: u16,
@@ -354,7 +373,7 @@ struct RenderKey {
 
 impl RenderKey {
     fn same_view(&self, other: &Self) -> bool {
-        self.idx == other.idx
+        self.image_key == other.image_key
             && self.viewport_w == other.viewport_w
             && self.viewport_h == other.viewport_h
             && self.font_w == other.font_w
@@ -372,7 +391,7 @@ struct CachedOriginal {
 }
 
 struct RenderRequest {
-    idx: usize,
+    image_key: ImageCacheKey,
     image: Arc<image::RgbaImage>,
     viewport: Size,
     font_size: FontSize,
@@ -384,7 +403,7 @@ struct RenderRequest {
 }
 
 struct RenderResult {
-    idx: usize,
+    image_key: ImageCacheKey,
     protocol: Protocol,
     key: RenderKey,
     generation: u64,
@@ -549,6 +568,7 @@ impl App {
             directory_generation: 0,
             protocol_cache: LruCache::new(NonZeroUsize::new(MAX_CACHE_SIZE).unwrap()),
             fullscreen_content: None,
+            fullscreen_content_key: None,
             fullscreen_frame_idx: 0,
             fullscreen_next_frame_at: None,
             fullscreen_pending,
@@ -586,7 +606,7 @@ impl App {
             load_rx,
             load_control,
             status_message: None,
-            favorites: FavoriteStore::load_default(),
+            favorites: default_favorite_store(),
             directory_selected_path: None,
         };
         app.rebuild_directory_gallery(selected_path.clone());
@@ -680,6 +700,16 @@ impl App {
             .map(|entry| entry.path.clone())
     }
 
+    fn current_selected_cache_key(&self) -> Option<ImageCacheKey> {
+        self.images
+            .get(self.selected)
+            .map(ImageCacheKey::from_entry)
+    }
+
+    pub(crate) fn image_cache_key_for_slot(&self, idx: usize) -> Option<ImageCacheKey> {
+        self.images.get(idx).map(ImageCacheKey::from_entry)
+    }
+
     fn rebuild_active_gallery(&mut self, selected_path: Option<PathBuf>) -> usize {
         match self.gallery_mode {
             GalleryMode::Directory => {
@@ -700,11 +730,11 @@ impl App {
                 break;
             }
             let favorite_key = FavoriteStore::normalize_path(&favorite.path);
-            if let Some(entry) = self.directory_images.iter().find(|entry| {
-                FavoriteStore::normalize_path(&entry.path) == favorite_key
-                    && !pinned_keys.contains(&favorite_key)
-            }) {
-                pinned.push(entry.clone());
+            if pinned_keys.contains(&favorite_key) {
+                continue;
+            }
+            if let Some(entry) = image_entry_from_path(&favorite.path) {
+                pinned.push(entry);
                 pinned_keys.insert(favorite_key);
             }
         }
@@ -770,12 +800,19 @@ impl App {
     }
 
     fn invalidate_active_gallery(&mut self) {
-        self.directory_generation = self.directory_generation.wrapping_add(1);
-        self.clear_directory_caches();
         if self.state == AppState::Fullscreen {
             if self.images.is_empty() {
                 self.exit_fullscreen();
+            } else if self.fullscreen_content_key == self.current_selected_cache_key() {
+                self.update_fullscreen_original_interest();
+                self.prefetch_fullscreen_neighbors();
             } else {
+                self.reset_fullscreen_content();
+                self.zoom = 1.0;
+                self.pan_x = 0;
+                self.pan_y = 0;
+                self.fullscreen_image_w = 0;
+                self.fullscreen_image_h = 0;
                 self.prepare_fullscreen_selection();
             }
         }
@@ -897,29 +934,12 @@ impl App {
         self.reset_context_selection_to_current_folder();
         self.search = None;
         self.status_message = None;
-        self.directory_generation = self.directory_generation.wrapping_add(1);
-        self.clear_directory_caches();
     }
 
     fn reset_context_selection_to_current_folder(&mut self) {
         let entries = self.directory_context_for_browser();
         self.context_selected = if entries.len() > 1 { 1 } else { 0 };
         self.context_scroll = 0;
-    }
-
-    fn clear_directory_caches(&mut self) {
-        self.load_control.set_generation(self.directory_generation);
-        self.clear_protocol_cache();
-        self.reset_fullscreen_content();
-        self.fullscreen_pending = false;
-        self.fullscreen_image_w = 0;
-        self.fullscreen_image_h = 0;
-        self.zoom = 1.0;
-        self.pan_x = 0;
-        self.pan_y = 0;
-        self.fullscreen_original_cache.clear();
-        self.fullscreen_original_cache_bytes = 0;
-        self.fullscreen_render_cache.clear();
     }
 
     pub fn browser_status_message(&mut self) -> Option<String> {
@@ -1112,7 +1132,7 @@ impl App {
             }
             return;
         }
-        if let Some(idx) = self.index_at_visual_position(row - 1, col) {
+        if let Some(idx) = self.nearest_index_in_visual_row(row - 1, col) {
             self.selected = idx;
         }
     }
@@ -1127,7 +1147,13 @@ impl App {
     }
 
     pub fn navigate_home(&mut self) {
-        self.selected = 0;
+        let favorite_row_len = self.favorite_row_len();
+        self.selected = if favorite_row_len > 0 && favorite_row_len < self.images.len() {
+            favorite_row_len
+        } else {
+            0
+        };
+        self.scroll_row = 0;
     }
 
     pub fn navigate_end(&mut self) {
@@ -1302,6 +1328,7 @@ impl App {
 
     fn reset_fullscreen_content(&mut self) {
         self.fullscreen_content = None;
+        self.fullscreen_content_key = None;
         self.fullscreen_frame_idx = 0;
         self.fullscreen_next_frame_at = None;
         self.fullscreen_dims = None;
@@ -1325,37 +1352,47 @@ impl App {
 
     fn update_fullscreen_original_interest(&self) {
         self.load_control
-            .update_original_interest(self.directory_generation, self.fullscreen_interest_slots());
+            .update_original_interest(self.directory_generation, self.fullscreen_interest_keys());
     }
 
-    fn fullscreen_interest_slots(&self) -> Vec<usize> {
+    fn fullscreen_interest_keys(&self) -> Vec<ImageCacheKey> {
         if self.images.is_empty() || self.selected >= self.images.len() {
             return Vec::new();
         }
 
-        let mut slots = Vec::with_capacity(3);
-        slots.push(self.selected);
+        let mut keys = Vec::with_capacity(3);
+        if let Some(key) = self.image_cache_key_for_slot(self.selected) {
+            keys.push(key);
+        }
         if self.selected > 0 {
-            slots.push(self.selected - 1);
+            if let Some(key) = self.image_cache_key_for_slot(self.selected - 1) {
+                keys.push(key);
+            }
         }
         if self.selected + 1 < self.images.len() {
-            slots.push(self.selected + 1);
+            if let Some(key) = self.image_cache_key_for_slot(self.selected + 1) {
+                keys.push(key);
+            }
         }
-        slots
+        keys
     }
 
     fn show_cached_fullscreen_original(&mut self, now: Instant) -> bool {
-        let Some(image) = self.cached_fullscreen_original(self.selected) else {
+        let Some(key) = self.current_selected_cache_key() else {
+            return false;
+        };
+        let Some(image) = self.cached_fullscreen_original(&key) else {
             return false;
         };
         let dims = Some((image.width(), image.height()));
-        self.set_fullscreen_content(
+        self.set_fullscreen_content_for_key(
             FullscreenContent::Static(StaticContent {
                 protocol: None,
                 original: image,
             }),
             dims,
             now,
+            Some(key),
         );
         true
     }
@@ -1372,11 +1409,23 @@ impl App {
         }
     }
 
+    #[cfg(test)]
     pub fn set_fullscreen_content(
         &mut self,
         content: FullscreenContent,
         dims: Option<(u32, u32)>,
         now: Instant,
+    ) {
+        let key = self.current_selected_cache_key();
+        self.set_fullscreen_content_for_key(content, dims, now, key);
+    }
+
+    fn set_fullscreen_content_for_key(
+        &mut self,
+        content: FullscreenContent,
+        dims: Option<(u32, u32)>,
+        now: Instant,
+        key: Option<ImageCacheKey>,
     ) {
         self.fullscreen_frame_idx = 0;
         self.zoom = 1.0;
@@ -1388,6 +1437,7 @@ impl App {
             FullscreenContent::Static(_) => None,
         };
         self.fullscreen_content = Some(content);
+        self.fullscreen_content_key = key;
         self.fullscreen_dims = dims;
         self.fullscreen_protocol_key = None;
         if is_static {
@@ -1474,58 +1524,57 @@ impl App {
         let now = Instant::now();
         while let Ok(result) = self.load_rx.try_recv() {
             let LoadResult {
-                idx,
-                path,
+                key,
                 size,
                 generation,
                 content,
                 dims,
+                ..
             } = result;
-            self.requested.remove(&(generation, idx, size.clone()));
+            self.requested.remove(&(key.clone(), size.clone()));
             if generation != self.directory_generation {
-                continue;
-            }
-            let path_is_current = self.images.get(idx).is_some_and(|entry| entry.path == path);
-            if !path_is_current {
                 continue;
             }
             match content {
                 LoadContent::Skipped => continue,
                 LoadContent::Original(content) => match content {
                     FullscreenContent::Static(sc) => {
-                        self.insert_fullscreen_original(idx, Arc::clone(&sc.original));
-                        if self.state == AppState::Fullscreen && idx == self.selected {
-                            self.set_fullscreen_content(
+                        self.insert_fullscreen_original(key.clone(), Arc::clone(&sc.original));
+                        if self.state == AppState::Fullscreen
+                            && self.current_selected_cache_key().as_ref() == Some(&key)
+                        {
+                            self.set_fullscreen_content_for_key(
                                 FullscreenContent::Static(StaticContent {
                                     protocol: None,
                                     original: sc.original,
                                 }),
                                 dims,
                                 now,
+                                Some(key),
                             );
                             self.fullscreen_pending = true;
                         }
                     }
                     FullscreenContent::Animation(frames) => {
-                        if self.state == AppState::Fullscreen && idx == self.selected {
-                            self.set_fullscreen_content(
+                        if self.state == AppState::Fullscreen
+                            && self.current_selected_cache_key().as_ref() == Some(&key)
+                        {
+                            self.set_fullscreen_content_for_key(
                                 FullscreenContent::Animation(frames),
                                 dims,
                                 now,
+                                Some(key),
                             );
                             self.fullscreen_pending = false;
                         }
                     }
                 },
                 LoadContent::Thumbnail(proto) => {
-                    // Discard protocols that exceed current cell (stale from terminal resize)
-                    let psize = proto.size();
-                    if self.thumb_w > 0
-                        && (psize.width > self.thumb_w || psize.height > self.thumb_h)
+                    if !matches!(size, LoadSize::Thumbnail { w, h } if w == self.thumb_w && h == self.thumb_h)
                     {
                         continue;
                     }
-                    self.insert_cache(idx, proto);
+                    self.insert_cache(key, proto);
                 }
             }
         }
@@ -1539,7 +1588,7 @@ impl App {
 
     fn apply_render_result(&mut self, result: RenderResult) {
         if self.state != AppState::Fullscreen
-            || self.selected != result.idx
+            || self.current_selected_cache_key().as_ref() != Some(&result.image_key)
             || self.render_generation != result.generation
         {
             return;
@@ -1651,9 +1700,9 @@ impl App {
             return None;
         }
         let font_size = self.picker.font_size();
-        let key = self.render_key(quality, font_size);
+        let key = self.current_render_key(quality)?;
         Some(RenderRequest {
-            idx: self.selected,
+            image_key: key.image_key.clone(),
             image: Arc::clone(&sc.original),
             viewport: Size::new(
                 self.fullscreen_image_w.max(1),
@@ -1677,12 +1726,21 @@ impl App {
         {
             return None;
         }
-        Some(self.render_key(quality, self.picker.font_size()))
+        Some(self.render_key(
+            quality,
+            self.picker.font_size(),
+            self.current_selected_cache_key()?,
+        ))
     }
 
-    fn render_key(&self, quality: RenderQuality, font_size: FontSize) -> RenderKey {
+    fn render_key(
+        &self,
+        quality: RenderQuality,
+        font_size: FontSize,
+        image_key: ImageCacheKey,
+    ) -> RenderKey {
         RenderKey {
-            idx: self.selected,
+            image_key,
             viewport_w: self.fullscreen_image_w.max(1),
             viewport_h: self.fullscreen_image_h.max(1),
             font_w: font_size.width.max(1),
@@ -1717,17 +1775,17 @@ impl App {
         ))
     }
 
-    fn cached_fullscreen_original(&mut self, idx: usize) -> Option<Arc<image::RgbaImage>> {
+    fn cached_fullscreen_original(&mut self, key: &ImageCacheKey) -> Option<Arc<image::RgbaImage>> {
         self.fullscreen_original_cache
-            .get(&idx)
+            .get(key)
             .map(|entry| Arc::clone(&entry.image))
     }
 
-    fn insert_fullscreen_original(&mut self, idx: usize, image: Arc<image::RgbaImage>) {
+    fn insert_fullscreen_original(&mut self, key: ImageCacheKey, image: Arc<image::RgbaImage>) {
         let bytes = rgba_bytes(&image);
         if let Some(old) = self
             .fullscreen_original_cache
-            .put(idx, CachedOriginal { image, bytes })
+            .put(key, CachedOriginal { image, bytes })
         {
             self.fullscreen_original_cache_bytes = self
                 .fullscreen_original_cache_bytes
@@ -1735,48 +1793,49 @@ impl App {
         }
         self.fullscreen_original_cache_bytes =
             self.fullscreen_original_cache_bytes.saturating_add(bytes);
-        self.evict_fullscreen_originals(Some(self.selected));
+        self.evict_fullscreen_originals(self.current_selected_cache_key());
     }
 
-    fn evict_fullscreen_originals(&mut self, protect_idx: Option<usize>) {
+    fn evict_fullscreen_originals(&mut self, protect_key: Option<ImageCacheKey>) {
         let mut protected = Vec::new();
         while self.fullscreen_original_cache_bytes > FULLSCREEN_ORIGINAL_CACHE_BYTES
             && self.fullscreen_original_cache.len() + protected.len() > 1
         {
-            let Some((idx, entry)) = self.fullscreen_original_cache.pop_lru() else {
+            let Some((key, entry)) = self.fullscreen_original_cache.pop_lru() else {
                 break;
             };
-            if Some(idx) == protect_idx {
-                protected.push((idx, entry));
+            if Some(&key) == protect_key.as_ref() {
+                protected.push((key, entry));
                 continue;
             }
             self.fullscreen_original_cache_bytes = self
                 .fullscreen_original_cache_bytes
                 .saturating_sub(entry.bytes);
         }
-        for (idx, entry) in protected {
-            self.fullscreen_original_cache.put(idx, entry);
+        for (key, entry) in protected {
+            self.fullscreen_original_cache.put(key, entry);
         }
     }
 
-    fn insert_cache(&mut self, idx: usize, proto: Protocol) {
-        self.protocol_cache.put(idx, proto);
+    fn insert_cache(&mut self, key: ImageCacheKey, proto: Protocol) {
+        self.protocol_cache.put(key, proto);
     }
 
     pub fn request_load(&mut self, idx: usize, size: LoadSize) {
         let Some(entry) = self.images.get(idx) else {
             return;
         };
-        if matches!(size, LoadSize::Original) && self.fullscreen_original_cache.contains(&idx) {
+        let key = ImageCacheKey::from_entry(entry);
+        if matches!(size, LoadSize::Original) && self.fullscreen_original_cache.contains(&key) {
             return;
         }
-        let key = (self.directory_generation, idx, size.clone());
-        if self.requested.contains(&key) {
+        let requested_key = (key.clone(), size.clone());
+        if self.requested.contains(&requested_key) {
             return;
         }
-        self.requested.insert(key);
+        self.requested.insert(requested_key);
         let _ = self.load_tx.send(LoadRequest {
-            idx,
+            key,
             path: entry.path.clone(),
             size,
             generation: self.directory_generation,
@@ -1785,25 +1844,27 @@ impl App {
 
     pub fn clear_protocol_cache(&mut self) {
         self.protocol_cache.clear();
-        self.requested.clear();
+        self.requested
+            .retain(|(_, size)| !matches!(size, LoadSize::Thumbnail { .. }));
         self.cache_width = 0;
         self.load_control
             .clear_thumbnail_interest(self.directory_generation);
     }
 
     fn clear_pending_original_requests(&mut self) {
-        let current_generation = self.directory_generation;
-        self.requested.retain(|(generation, _, size)| {
-            *generation != current_generation || !matches!(size, LoadSize::Original)
-        });
+        self.requested
+            .retain(|(_, size)| !matches!(size, LoadSize::Original));
     }
 
     pub(crate) fn update_thumbnail_interest<I>(&self, w: u16, h: u16, slots: I)
     where
         I: IntoIterator<Item = usize>,
     {
+        let keys = slots
+            .into_iter()
+            .filter_map(|slot| self.image_cache_key_for_slot(slot));
         self.load_control
-            .update_thumbnail_interest(self.directory_generation, w, h, slots);
+            .update_thumbnail_interest(self.directory_generation, w, h, keys);
     }
 
     pub(crate) fn clear_thumbnail_interest(&self) {
@@ -2113,6 +2174,21 @@ impl App {
     }
 }
 
+#[cfg(not(test))]
+fn default_favorite_store() -> FavoriteStore {
+    FavoriteStore::load_default()
+}
+
+#[cfg(test)]
+fn default_favorite_store() -> FavoriteStore {
+    static NEXT_FAVORITE_STORE: AtomicUsize = AtomicUsize::new(0);
+    FavoriteStore::empty_at(std::env::temp_dir().join(format!(
+        "termfoto-test-favorites-{}-{}.tsv",
+        std::process::id(),
+        NEXT_FAVORITE_STORE.fetch_add(1, Ordering::Relaxed)
+    )))
+}
+
 fn browser_directory_context_entries(context_dir: &Path) -> Vec<DirectoryContextEntry> {
     let mut entries = vec![DirectoryContextEntry {
         name: directory_display_name(context_dir),
@@ -2254,7 +2330,7 @@ pub enum LoadSize {
 /// A request sent to the background loader.
 #[derive(Debug, Clone)]
 pub struct LoadRequest {
-    pub idx: usize,
+    pub key: ImageCacheKey,
     pub path: PathBuf,
     pub size: LoadSize,
     pub generation: u64,
@@ -2368,7 +2444,7 @@ fn spawn_render_worker(picker: Picker) -> (Sender<RenderRequest>, Receiver<Rende
             }
             if let Some(protocol) = render_zoom_protocol(&picker, &mut resizer, &request) {
                 let _ = done_tx.send(RenderResult {
-                    idx: request.idx,
+                    image_key: request.image_key,
                     protocol,
                     key: request.key,
                     generation: request.generation,
@@ -2552,15 +2628,14 @@ fn process_load_request_with_control(
 
 fn skipped_load_result(req: LoadRequest) -> LoadResult {
     let LoadRequest {
-        idx,
-        path,
+        key,
         size,
         generation,
+        ..
     } = req;
 
     LoadResult {
-        idx,
-        path,
+        key,
         size,
         generation,
         content: LoadContent::Skipped,
@@ -2570,23 +2645,24 @@ fn skipped_load_result(req: LoadRequest) -> LoadResult {
 
 fn process_load_request(picker: &Picker, req: LoadRequest) -> Option<LoadResult> {
     let LoadRequest {
-        idx,
+        key,
         path,
         size,
         generation,
+        ..
     } = req;
     match size {
         LoadSize::Thumbnail { w, h } => {
-            process_thumbnail_request(picker, path.as_path(), idx, generation, w, h)
+            process_thumbnail_request(picker, path.as_path(), key, generation, w, h)
         }
-        LoadSize::Original => process_original_request(picker, path.as_path(), idx, generation),
+        LoadSize::Original => process_original_request(picker, path.as_path(), key, generation),
     }
 }
 
 fn process_thumbnail_request(
     picker: &Picker,
     path: &Path,
-    idx: usize,
+    key: ImageCacheKey,
     generation: u64,
     w: u16,
     h: u16,
@@ -2600,8 +2676,7 @@ fn process_thumbnail_request(
     let protocol = make_protocol(picker, thumb, Size::new(w, h), ProtocolFilterType::Nearest)?;
 
     Some(LoadResult {
-        idx,
-        path: path.to_path_buf(),
+        key,
         size: LoadSize::Thumbnail { w, h },
         generation,
         content: LoadContent::Thumbnail(protocol),
@@ -2612,7 +2687,7 @@ fn process_thumbnail_request(
 fn process_original_request(
     picker: &Picker,
     path: &Path,
-    idx: usize,
+    key: ImageCacheKey,
     generation: u64,
 ) -> Option<LoadResult> {
     let dims = image::image_dimensions(path).ok()?;
@@ -2632,8 +2707,7 @@ fn process_original_request(
     };
 
     Some(LoadResult {
-        idx,
-        path: path.to_path_buf(),
+        key,
         size: LoadSize::Original,
         generation,
         content: LoadContent::Original(content),
@@ -2746,6 +2820,28 @@ mod tests {
         }
     }
 
+    fn test_key(name: &str) -> ImageCacheKey {
+        ImageCacheKey::from_entry(&test_entry(name, 0, None))
+    }
+
+    fn app_key(app: &App, idx: usize) -> ImageCacheKey {
+        app.image_cache_key_for_slot(idx).unwrap()
+    }
+
+    fn path_key(path: &Path) -> ImageCacheKey {
+        let entry = image_entry_from_path(path).unwrap_or_else(|| ImageEntry {
+            path: path.to_path_buf(),
+            filename: path
+                .file_name()
+                .unwrap_or_default()
+                .to_string_lossy()
+                .into_owned(),
+            file_size: 0,
+            modified_at: None,
+        });
+        ImageCacheKey::from_entry(&entry)
+    }
+
     fn make_app_with_entries(images: Vec<ImageEntry>) -> App {
         let (tx, _rx) = std::sync::mpsc::channel::<LoadRequest>();
         let (_tx2, rx2) = std::sync::mpsc::channel::<LoadResult>();
@@ -2834,17 +2930,17 @@ mod tests {
         }
     }
 
-    fn missing_load_request(idx: usize, size: LoadSize, generation: u64) -> LoadRequest {
+    fn missing_load_request(_idx: usize, size: LoadSize, generation: u64) -> LoadRequest {
+        let path = PathBuf::from("missing.png");
         LoadRequest {
-            idx,
-            path: PathBuf::from("missing.png"),
+            key: path_key(&path),
+            path,
             size,
             generation,
         }
     }
 
-    fn assert_skipped(result: LoadResult, idx: usize, size: LoadSize, generation: u64) {
-        assert_eq!(result.idx, idx);
+    fn assert_skipped(result: LoadResult, _idx: usize, size: LoadSize, generation: u64) {
         assert_eq!(result.size, size);
         assert_eq!(result.generation, generation);
         assert!(matches!(result.content, LoadContent::Skipped));
@@ -2916,7 +3012,19 @@ mod tests {
     }
 
     #[test]
-    fn sorting_preserves_selected_image_and_invalidates_loads() {
+    fn image_cache_key_includes_file_metadata() {
+        let original = ImageCacheKey::from_entry(&test_entry("same.png", 10, Some(1)));
+        let same = ImageCacheKey::from_entry(&test_entry("same.png", 10, Some(1)));
+        let resized = ImageCacheKey::from_entry(&test_entry("same.png", 11, Some(1)));
+        let modified = ImageCacheKey::from_entry(&test_entry("same.png", 10, Some(2)));
+
+        assert_eq!(original, same);
+        assert_ne!(original, resized);
+        assert_ne!(original, modified);
+    }
+
+    #[test]
+    fn sorting_preserves_selected_image_and_image_caches() {
         let mut app = make_app_with_entries(vec![
             test_entry("a.png", 1, Some(10)),
             test_entry("b.png", 1, Some(30)),
@@ -2926,12 +3034,10 @@ mod tests {
         app.visible_rows = 1;
         app.selected = 0;
         app.scroll_row = 0;
-        app.protocol_cache.put(0, make_protocol());
-        app.requested.insert((
-            app.directory_generation,
-            0,
-            LoadSize::Thumbnail { w: 1, h: 1 },
-        ));
+        let first_key = app_key(&app, 0);
+        app.protocol_cache.put(first_key.clone(), make_protocol());
+        app.requested
+            .insert((first_key, LoadSize::Thumbnail { w: 1, h: 1 }));
         let generation = app.directory_generation;
 
         app.handle_key(KeyCode::Char('s'), KeyModifiers::NONE);
@@ -2940,9 +3046,9 @@ mod tests {
         assert_eq!(app.images[app.selected].filename, "a.png");
         assert_eq!(app.selected, 2);
         assert_eq!(app.scroll_row, 2);
-        assert!(app.protocol_cache.is_empty());
-        assert!(app.requested.is_empty());
-        assert!(app.directory_generation > generation);
+        assert!(!app.protocol_cache.is_empty());
+        assert!(!app.requested.is_empty());
+        assert_eq!(app.directory_generation, generation);
     }
 
     #[test]
@@ -2994,15 +3100,17 @@ mod tests {
     }
 
     #[test]
-    fn old_generation_load_results_are_discarded_after_sort() {
+    fn thumbnail_load_results_cache_after_sort_by_key() {
         let (mut app, done_tx) = make_app_with_load_done(2);
         let generation = app.directory_generation;
+        let key = app_key(&app, 0);
+        app.thumb_w = 1;
+        app.thumb_h = 1;
 
         app.handle_key(KeyCode::Char('s'), KeyModifiers::NONE);
         done_tx
             .send(LoadResult {
-                idx: 0,
-                path: PathBuf::from("img000.png"),
+                key: key.clone(),
                 size: LoadSize::Thumbnail { w: 1, h: 1 },
                 generation,
                 content: LoadContent::Thumbnail(make_protocol()),
@@ -3011,7 +3119,7 @@ mod tests {
             .unwrap();
         app.collect_loads();
 
-        assert!(app.protocol_cache.is_empty());
+        assert!(app.protocol_cache.contains(&key));
     }
 
     #[test]
@@ -3189,14 +3297,11 @@ mod tests {
         app.enter_fullscreen();
         let first = rx.try_recv().unwrap();
         assert_eq!(first.size, LoadSize::Original);
-        assert!(app
-            .requested
-            .contains(&(app.directory_generation, 0, LoadSize::Original)));
+        let key = app_key(&app, 0);
+        assert!(app.requested.contains(&(key.clone(), LoadSize::Original)));
 
         app.exit_fullscreen();
-        assert!(!app
-            .requested
-            .contains(&(app.directory_generation, 0, LoadSize::Original)));
+        assert!(!app.requested.contains(&(key, LoadSize::Original)));
 
         app.enter_fullscreen();
         let second = rx.try_recv().unwrap();
@@ -3213,13 +3318,11 @@ mod tests {
         app.request_load(0, LoadSize::Original);
 
         let thumb = rx.try_recv().unwrap();
-        assert_eq!(thumb.idx, 0);
         assert_eq!(thumb.path, PathBuf::from("img000.png"));
         assert_eq!(thumb.generation, app.directory_generation);
         assert_eq!(thumb.size, LoadSize::Thumbnail { w: 10, h: 5 });
 
         let original = rx.try_recv().unwrap();
-        assert_eq!(original.idx, 0);
         assert_eq!(original.path, PathBuf::from("img000.png"));
         assert_eq!(original.generation, app.directory_generation);
         assert_eq!(original.size, LoadSize::Original);
@@ -3312,10 +3415,8 @@ mod tests {
         }
 
         let picker = Picker::halfblocks();
-        let result = process_original_request(&picker, &path, 7, 11).unwrap();
+        let result = process_original_request(&picker, &path, path_key(&path), 11).unwrap();
 
-        assert_eq!(result.idx, 7);
-        assert_eq!(result.path, path);
         assert_eq!(result.size, LoadSize::Original);
         assert_eq!(result.generation, 11);
         assert_eq!(result.dims, Some((1, 1)));
@@ -3336,10 +3437,8 @@ mod tests {
             .unwrap();
 
         let picker = Picker::halfblocks();
-        let result = process_original_request(&picker, &path, 2, 13).unwrap();
+        let result = process_original_request(&picker, &path, path_key(&path), 13).unwrap();
 
-        assert_eq!(result.idx, 2);
-        assert_eq!(result.path, path);
         assert_eq!(result.size, LoadSize::Original);
         assert_eq!(result.generation, 13);
         assert_eq!(result.dims, Some((3, 2)));
@@ -3367,10 +3466,8 @@ mod tests {
         .unwrap();
 
         let picker = Picker::halfblocks();
-        let result = process_thumbnail_request(&picker, &path, 5, 17, 8, 4).unwrap();
+        let result = process_thumbnail_request(&picker, &path, path_key(&path), 17, 8, 4).unwrap();
 
-        assert_eq!(result.idx, 5);
-        assert_eq!(result.path, path);
         assert_eq!(result.size, LoadSize::Thumbnail { w: 8, h: 4 });
         assert_eq!(result.generation, 17);
         assert_eq!(result.dims, Some((4, 3)));
@@ -3410,7 +3507,7 @@ mod tests {
         let picker = Picker::halfblocks();
         let control = LoadControl::new();
         let size = LoadSize::Thumbnail { w: 8, h: 4 };
-        control.update_thumbnail_interest(0, 8, 4, [1, 2, 3]);
+        control.update_thumbnail_interest(0, 8, 4, [test_key("img001.png")]);
 
         let result = process_load_request_with_control(
             &picker,
@@ -3427,7 +3524,7 @@ mod tests {
         let picker = Picker::halfblocks();
         let control = LoadControl::new();
         let size = LoadSize::Thumbnail { w: 7, h: 4 };
-        control.update_thumbnail_interest(0, 8, 4, [0]);
+        control.update_thumbnail_interest(0, 8, 4, [test_key("missing.png")]);
 
         let result = process_load_request_with_control(
             &picker,
@@ -3443,7 +3540,7 @@ mod tests {
     fn load_control_skips_original_outside_current_neighbors() {
         let picker = Picker::halfblocks();
         let control = LoadControl::new();
-        control.update_original_interest(0, [4, 5, 6]);
+        control.update_original_interest(0, [test_key("img004.png")]);
 
         let result = process_load_request_with_control(
             &picker,
@@ -3462,13 +3559,13 @@ mod tests {
         write_png(&path);
         let picker = Picker::halfblocks();
         let control = LoadControl::new();
-        control.update_original_interest(0, [4, 5, 6]);
+        control.update_original_interest(0, [path_key(&path)]);
 
         let result = process_load_request_with_control(
             &picker,
             &control,
             LoadRequest {
-                idx: 5,
+                key: path_key(&path),
                 path: path.clone(),
                 size: LoadSize::Original,
                 generation: 0,
@@ -3476,8 +3573,6 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(result.idx, 5);
-        assert_eq!(result.path, path);
         assert_eq!(result.size, LoadSize::Original);
         assert_eq!(result.generation, 0);
         assert!(matches!(result.content, LoadContent::Original(_)));
@@ -3511,7 +3606,7 @@ mod tests {
         let current_generation = app.render_generation;
 
         app.apply_render_result(RenderResult {
-            idx: app.selected,
+            image_key: app_key(&app, app.selected),
             protocol: make_protocol(),
             key,
             generation: current_generation.saturating_sub(1),
@@ -3635,12 +3730,14 @@ mod tests {
     #[test]
     fn fullscreen_original_cache_accounts_rgba_bytes() {
         let mut app = make_app(1);
+        let key = app_key(&app, 0);
 
-        app.insert_fullscreen_original(0, Arc::new(image::RgbaImage::new(10, 20)));
+        app.insert_fullscreen_original(key.clone(), Arc::new(image::RgbaImage::new(10, 20)));
 
         assert_eq!(app.fullscreen_original_cache_bytes, 10 * 20 * 4);
         assert_eq!(
-            app.cached_fullscreen_original(0).map(|image| image.len()),
+            app.cached_fullscreen_original(&key)
+                .map(|image| image.len()),
             Some(10 * 20 * 4)
         );
     }
@@ -3650,13 +3747,16 @@ mod tests {
         let mut app = make_app(3);
         app.selected = 0;
         for idx in 0..3 {
-            app.insert_fullscreen_original(idx, Arc::new(image::RgbaImage::new(4096, 4096)));
+            app.insert_fullscreen_original(
+                app_key(&app, idx),
+                Arc::new(image::RgbaImage::new(4096, 4096)),
+            );
         }
 
         assert!(app.fullscreen_original_cache_bytes <= FULLSCREEN_ORIGINAL_CACHE_BYTES);
-        assert!(app.fullscreen_original_cache.contains(&0));
-        assert!(app.fullscreen_original_cache.contains(&2));
-        assert!(!app.fullscreen_original_cache.contains(&1));
+        assert!(app.fullscreen_original_cache.contains(&app_key(&app, 0)));
+        assert!(app.fullscreen_original_cache.contains(&app_key(&app, 2)));
+        assert!(!app.fullscreen_original_cache.contains(&app_key(&app, 1)));
     }
 
     #[test]
@@ -3664,12 +3764,15 @@ mod tests {
         let mut app = make_app(2);
         app.selected = 0;
         for idx in 0..2 {
-            app.insert_fullscreen_original(idx, Arc::new(image::RgbaImage::new(5000, 5000)));
+            app.insert_fullscreen_original(
+                app_key(&app, idx),
+                Arc::new(image::RgbaImage::new(5000, 5000)),
+            );
         }
 
         assert!(app.fullscreen_original_cache_bytes <= FULLSCREEN_ORIGINAL_CACHE_BYTES);
-        assert!(app.fullscreen_original_cache.contains(&0));
-        assert!(!app.fullscreen_original_cache.contains(&1));
+        assert!(app.fullscreen_original_cache.contains(&app_key(&app, 0)));
+        assert!(!app.fullscreen_original_cache.contains(&app_key(&app, 1)));
     }
 
     #[test]
@@ -3777,21 +3880,21 @@ mod tests {
     fn thumbnail_lru_evicts_least_recently_used_entry() {
         let mut app = make_app(MAX_CACHE_SIZE + 1);
         for idx in 0..MAX_CACHE_SIZE {
-            app.insert_cache(idx, make_protocol());
+            app.insert_cache(app_key(&app, idx), make_protocol());
         }
 
-        app.insert_cache(MAX_CACHE_SIZE, make_protocol());
+        app.insert_cache(app_key(&app, MAX_CACHE_SIZE), make_protocol());
 
         assert_eq!(app.protocol_cache.len(), MAX_CACHE_SIZE);
-        assert!(!app.protocol_cache.contains(&0));
-        assert!(app.protocol_cache.contains(&MAX_CACHE_SIZE));
+        assert!(!app.protocol_cache.contains(&app_key(&app, 0)));
+        assert!(app.protocol_cache.contains(&app_key(&app, MAX_CACHE_SIZE)));
     }
 
     #[test]
     fn thumbnail_lru_touch_keeps_visible_cache_entry() {
         let mut app = make_app(MAX_CACHE_SIZE + 1);
         for idx in 0..MAX_CACHE_SIZE {
-            app.insert_cache(idx, make_protocol());
+            app.insert_cache(app_key(&app, idx), make_protocol());
         }
         app.grid_cols = 1;
         app.visible_rows = 1;
@@ -3800,11 +3903,11 @@ mod tests {
         app.cache_height = 24;
 
         crate::ui::browser::populate_protocol_cache(&mut app, 6, 6, Size::new(80, 24));
-        app.insert_cache(MAX_CACHE_SIZE, make_protocol());
+        app.insert_cache(app_key(&app, MAX_CACHE_SIZE), make_protocol());
 
         assert_eq!(app.protocol_cache.len(), MAX_CACHE_SIZE);
-        assert!(app.protocol_cache.contains(&0));
-        assert!(!app.protocol_cache.contains(&2));
+        assert!(app.protocol_cache.contains(&app_key(&app, 0)));
+        assert!(!app.protocol_cache.contains(&app_key(&app, 2)));
     }
 
     #[test]
@@ -3830,13 +3933,12 @@ mod tests {
             Picker::halfblocks(),
         );
         let size = LoadSize::Thumbnail { w: 1, h: 1 };
-        let key = (app.directory_generation, 0, size.clone());
-        app.requested.insert(key.clone());
+        let key = app_key(&app, 0);
+        app.requested.insert((key.clone(), size.clone()));
 
         done_tx
             .send(LoadResult {
-                idx: 0,
-                path: PathBuf::from("img000.png"),
+                key: key.clone(),
                 size: size.clone(),
                 generation: app.directory_generation,
                 content: LoadContent::Skipped,
@@ -3847,7 +3949,7 @@ mod tests {
         app.request_load(0, size.clone());
 
         assert!(!app.requested.is_empty());
-        assert!(!app.protocol_cache.contains(&0));
+        assert!(!app.protocol_cache.contains(&key));
         assert_eq!(load_rx.try_recv().unwrap().size, size);
     }
 
@@ -3951,12 +4053,10 @@ mod tests {
         app.context_dir = app.image_dir.clone();
         app.context_selected = 1;
         app.scroll_row = 3;
-        app.protocol_cache.put(0, make_protocol());
-        app.requested.insert((
-            app.directory_generation,
-            0,
-            LoadSize::Thumbnail { w: 1, h: 1 },
-        ));
+        let cached_key = app_key(&app, 0);
+        app.protocol_cache.put(cached_key.clone(), make_protocol());
+        app.requested
+            .insert((cached_key, LoadSize::Thumbnail { w: 1, h: 1 }));
         let generation = app.directory_generation;
 
         app.handle_key(KeyCode::Enter, KeyModifiers::NONE);
@@ -3968,9 +4068,9 @@ mod tests {
         assert_eq!(app.scroll_row, 0);
         assert_eq!(app.context_selected, 0);
         assert_eq!(app.context_scroll, 0);
-        assert!(app.protocol_cache.is_empty());
-        assert!(app.requested.is_empty());
-        assert!(app.directory_generation > generation);
+        assert!(!app.protocol_cache.is_empty());
+        assert!(!app.requested.is_empty());
+        assert_eq!(app.directory_generation, generation);
     }
 
     #[test]
@@ -4098,14 +4198,16 @@ mod tests {
     }
 
     #[test]
-    fn stale_load_results_are_discarded() {
+    fn stale_generation_is_discarded_but_path_mismatch_uses_key() {
         let (mut app, done_tx) = make_app_with_load_done(1);
         let generation = app.directory_generation;
+        let key = app_key(&app, 0);
+        app.thumb_w = 1;
+        app.thumb_h = 1;
 
         done_tx
             .send(LoadResult {
-                idx: 0,
-                path: PathBuf::from("img000.png"),
+                key: key.clone(),
                 size: LoadSize::Thumbnail { w: 1, h: 1 },
                 generation: generation.wrapping_add(1),
                 content: LoadContent::Thumbnail(make_protocol()),
@@ -4117,8 +4219,7 @@ mod tests {
 
         done_tx
             .send(LoadResult {
-                idx: 0,
-                path: PathBuf::from("other.png"),
+                key: key.clone(),
                 size: LoadSize::Thumbnail { w: 1, h: 1 },
                 generation,
                 content: LoadContent::Thumbnail(make_protocol()),
@@ -4126,7 +4227,7 @@ mod tests {
             })
             .unwrap();
         app.collect_loads();
-        assert!(app.protocol_cache.is_empty());
+        assert!(app.protocol_cache.contains(&key));
     }
 
     #[test]
@@ -4156,8 +4257,11 @@ mod tests {
     }
 
     #[test]
-    fn directory_gallery_pins_current_directory_favorites_by_newest_first() {
+    fn directory_gallery_pins_global_favorites_by_newest_first() {
         let dir = tempdir().unwrap();
+        for name in ["a.png", "b.png", "c.png", "d.png"] {
+            write_png(&dir.path().join(name));
+        }
         let images = vec![
             ImageEntry {
                 path: dir.path().join("a.png"),
@@ -4199,6 +4303,64 @@ mod tests {
         assert_eq!(app.images[app.selected].filename, "b.png");
         app.navigate_up();
         assert_eq!(app.images[app.selected].filename, "c.png");
+
+        app.selected = 3;
+        app.scroll_row = 2;
+        app.navigate_home();
+        assert_eq!(app.images[app.selected].filename, "b.png");
+        assert_eq!(app.scroll_row, 0);
+    }
+
+    #[test]
+    fn up_from_first_directory_row_jumps_to_nearest_favorite() {
+        let dir = tempdir().unwrap();
+        for name in ["a.png", "b.png", "c.png", "d.png"] {
+            write_png(&dir.path().join(name));
+        }
+        let images = ["a.png", "b.png", "c.png", "d.png"]
+            .into_iter()
+            .map(|name| ImageEntry {
+                path: dir.path().join(name),
+                filename: name.to_string(),
+                file_size: 0,
+                modified_at: None,
+            })
+            .collect();
+        let mut app = make_app_with_entries(images);
+        app.set_grid_layout(4, 3);
+        isolate_favorites(&mut app, dir.path());
+        app.add_favorite_for_tests(&dir.path().join("a.png"), 10);
+        app.selected = app
+            .images
+            .iter()
+            .position(|entry| entry.filename == "d.png")
+            .unwrap();
+
+        app.navigate_up();
+
+        assert_eq!(app.images[app.selected].filename, "a.png");
+    }
+
+    #[test]
+    fn directory_gallery_keeps_global_favorite_row_after_switching_folder() {
+        let dir = tempdir().unwrap();
+        let current = dir.path().join("current");
+        let child = current.join("child");
+        let other = dir.path().join("other");
+        fs::create_dir_all(&child).unwrap();
+        fs::create_dir_all(&other).unwrap();
+        write_png(&current.join("a.png"));
+        write_png(&child.join("new.png"));
+        write_png(&other.join("favorite.png"));
+        let (mut app, _rx) = make_app_for_dir(&current, 0, AppState::Browser);
+        app.set_grid_layout(3, 3);
+        isolate_favorites(&mut app, dir.path());
+        app.add_favorite_for_tests(&other.join("favorite.png"), 10);
+
+        app.enter_directory(child);
+
+        assert_eq!(app.favorite_row_len(), 1);
+        assert_eq!(image_names(&app), vec!["favorite.png", "new.png"]);
     }
 
     #[test]
@@ -4227,7 +4389,7 @@ mod tests {
         app.handle_key(KeyCode::Char('F'), KeyModifiers::NONE);
 
         assert_eq!(app.gallery_mode, GalleryMode::Directory);
-        assert_eq!(image_names(&app), vec!["a.png", "b.png"]);
+        assert_eq!(image_names(&app), vec!["c.png", "a.png", "b.png"]);
         assert_eq!(app.images[app.selected].filename, "b.png");
     }
 
@@ -4258,25 +4420,65 @@ mod tests {
     }
 
     #[test]
-    fn favorite_changes_clear_active_gallery_caches_and_increment_generation() {
+    fn favorite_changes_preserve_image_caches_and_generation() {
         let dir = tempdir().unwrap();
         let mut app = make_app(2);
         isolate_favorites(&mut app, dir.path());
-        app.protocol_cache.put(0, make_protocol());
-        app.requested.insert((
-            app.directory_generation,
-            0,
-            LoadSize::Thumbnail { w: 1, h: 1 },
-        ));
-        app.insert_fullscreen_original(0, Arc::new(image::RgbaImage::new(1, 1)));
+        let key = app_key(&app, 0);
+        app.protocol_cache.put(key.clone(), make_protocol());
+        app.requested
+            .insert((key.clone(), LoadSize::Thumbnail { w: 1, h: 1 }));
+        app.insert_fullscreen_original(key.clone(), Arc::new(image::RgbaImage::new(1, 1)));
         let generation = app.directory_generation;
 
         app.handle_key(KeyCode::Char('f'), KeyModifiers::NONE);
 
-        assert!(app.directory_generation > generation);
-        assert!(app.protocol_cache.is_empty());
-        assert!(app.requested.is_empty());
-        assert!(app.fullscreen_original_cache.is_empty());
+        assert_eq!(app.directory_generation, generation);
+        assert!(app.protocol_cache.contains(&key));
+        assert!(!app.requested.is_empty());
+        assert!(app.fullscreen_original_cache.contains(&key));
+    }
+
+    #[test]
+    fn favorite_toggle_reuses_cached_thumbnail_after_reorder() {
+        let dir = tempdir().unwrap();
+        write_png(&dir.path().join("sample.png"));
+        let (mut app, rx) = make_app_for_dir(dir.path(), 0, AppState::Browser);
+        isolate_favorites(&mut app, dir.path());
+        app.set_grid_layout(3, 3);
+        app.cache_width = 80;
+        app.cache_height = 24;
+        let key = app_key(&app, 0);
+        app.protocol_cache.put(key.clone(), make_protocol());
+
+        app.handle_key(KeyCode::Char('f'), KeyModifiers::NONE);
+        crate::ui::browser::populate_protocol_cache(&mut app, 6, 6, Size::new(80, 24));
+
+        assert_eq!(app.images[app.selected].filename, "sample.png");
+        assert_eq!(app_key(&app, app.selected), key);
+        assert!(app.protocol_cache.contains(&key));
+        assert!(rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn favorites_view_toggle_keeps_current_fullscreen_original_cache() {
+        let dir = tempdir().unwrap();
+        write_png(&dir.path().join("sample.png"));
+        let (mut app, _rx) = make_app_for_dir(dir.path(), 0, AppState::Browser);
+        isolate_favorites(&mut app, dir.path());
+        app.add_favorite_for_tests(&dir.path().join("sample.png"), 10);
+        let key = app_key(&app, app.selected);
+        app.insert_fullscreen_original(key.clone(), Arc::new(image::RgbaImage::new(2, 2)));
+
+        app.enter_fullscreen();
+        let render_generation = app.render_generation;
+        app.handle_key(KeyCode::Char('F'), KeyModifiers::NONE);
+
+        assert_eq!(app.gallery_mode, GalleryMode::Favorites);
+        assert_eq!(app.state, AppState::Fullscreen);
+        assert_eq!(app.fullscreen_content_key, Some(key.clone()));
+        assert!(app.fullscreen_original_cache.contains(&key));
+        assert_eq!(app.render_generation, render_generation);
     }
 
     #[test]
@@ -4372,18 +4574,16 @@ mod tests {
     }
 
     #[test]
-    fn rename_preserves_extension_selects_new_file_and_clears_caches() {
+    fn rename_preserves_extension_selects_new_file_and_preserves_caches() {
         let dir = tempdir().unwrap();
         write_png(&dir.path().join("old.jpg"));
         write_png(&dir.path().join("z.png"));
         let (mut app, _rx) = make_app_for_dir(dir.path(), 0, AppState::Browser);
-        app.protocol_cache.put(0, make_protocol());
-        app.requested.insert((
-            app.directory_generation,
-            0,
-            LoadSize::Thumbnail { w: 1, h: 1 },
-        ));
-        app.insert_fullscreen_original(0, Arc::new(image::RgbaImage::new(1, 1)));
+        let old_key = app_key(&app, 0);
+        app.protocol_cache.put(old_key.clone(), make_protocol());
+        app.requested
+            .insert((old_key.clone(), LoadSize::Thumbnail { w: 1, h: 1 }));
+        app.insert_fullscreen_original(old_key.clone(), Arc::new(image::RgbaImage::new(1, 1)));
         let generation = app.directory_generation;
 
         app.handle_key(KeyCode::Char('r'), KeyModifiers::NONE);
@@ -4394,10 +4594,10 @@ mod tests {
         assert!(dir.path().join("new.jpg").exists());
         assert_eq!(app.images[app.selected].filename, "new.jpg");
         assert_eq!(app.sort_mode, ImageSortMode::Name);
-        assert!(app.protocol_cache.is_empty());
-        assert!(app.requested.is_empty());
-        assert!(app.fullscreen_original_cache.is_empty());
-        assert!(app.directory_generation > generation);
+        assert!(app.protocol_cache.contains(&old_key));
+        assert!(!app.requested.is_empty());
+        assert!(app.fullscreen_original_cache.contains(&old_key));
+        assert_eq!(app.directory_generation, generation);
     }
 
     #[test]

@@ -37,6 +37,13 @@ impl Lang {
         }
     }
 
+    pub fn title_favorites(&self) -> &'static str {
+        match self {
+            Lang::Zh => "收藏",
+            Lang::En => "Favorites",
+        }
+    }
+
     pub fn title_info(&self) -> &'static str {
         match self {
             Lang::Zh => "文件信息",
@@ -437,6 +444,7 @@ mod tests {
         for lang in [Lang::Zh, Lang::En] {
             assert!(!lang.title_context().is_empty());
             assert!(!lang.title_gallery().is_empty());
+            assert!(!lang.title_favorites().is_empty());
             assert!(!lang.title_info().is_empty());
             assert!(!lang.empty_folder_context().is_empty());
             assert_eq!(
@@ -488,6 +496,7 @@ mod tests {
     fn test_zh_en_strings_differ() {
         assert_ne!(Lang::Zh.title_context(), Lang::En.title_context());
         assert_ne!(Lang::Zh.title_gallery(), Lang::En.title_gallery());
+        assert_ne!(Lang::Zh.title_favorites(), Lang::En.title_favorites());
         assert_ne!(Lang::Zh.title_info(), Lang::En.title_info());
         assert_ne!(
             Lang::Zh.empty_folder_context(),

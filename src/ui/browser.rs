@@ -1,4 +1,4 @@
-use crate::app::{App, BrowserFocus, LoadSize};
+use crate::app::{App, BrowserFocus, ImageCacheKey, LoadSize};
 use crate::ui::layout::three_panel_areas;
 use crate::ui::search::SearchBar;
 use crate::ui::{
@@ -49,10 +49,36 @@ impl<'a> Widget for BrowserView<'a> {
             self.app.browser_focus == BrowserFocus::Context,
             buf,
         );
+        let favorite_row_len = self.app.favorite_row_len();
+        let has_favorites_area = favorite_row_len > 0;
+        let favorites_height = if has_favorites_area {
+            cell_h.saturating_add(2).min(areas.gallery.height)
+        } else {
+            0
+        };
+        let favorites_area = Rect {
+            height: favorites_height,
+            ..areas.gallery
+        };
+        let gallery_area = Rect {
+            y: areas.gallery.y + favorites_height,
+            height: areas.gallery.height.saturating_sub(favorites_height),
+            ..areas.gallery
+        };
+        let selected_favorite = has_favorites_area && self.app.selected < favorite_row_len;
+        let favorites_inner = has_favorites_area.then(|| {
+            render_panel(
+                favorites_area,
+                self.app.lang.title_favorites(),
+                self.app.browser_focus == BrowserFocus::Gallery && selected_favorite,
+                buf,
+            )
+        });
         let gallery_inner = render_panel(
-            areas.gallery,
+            gallery_area,
             self.app.lang.title_gallery(),
-            self.app.browser_focus == BrowserFocus::Gallery,
+            self.app.browser_focus == BrowserFocus::Gallery
+                && (!has_favorites_area || !selected_favorite),
             buf,
         );
         let info_inner = render_panel(areas.info, self.app.lang.title_info(), false, buf);
@@ -76,40 +102,32 @@ impl<'a> Widget for BrowserView<'a> {
             buf,
         );
 
-        let available = gallery_inner.height;
-
-        // Grid centered both horizontally and vertically
-        let visible_rows = (available / cell_h).max(1) as usize;
+        let gallery_visible_rows = (gallery_inner.height / cell_h).max(1) as usize;
+        let visible_rows = gallery_visible_rows + usize::from(has_favorites_area);
         self.app.visible_rows = visible_rows;
-        let grid_h = (visible_rows as u16) * cell_h;
-        let grid_top = gallery_inner.y + (available.saturating_sub(grid_h)) / 2;
 
         self.app.clamp_scroll(visible_rows);
-
-        // Center the grid horizontally
-        let grid_w = self.app.grid_cols as u16 * cell_w;
-        let grid_x = gallery_inner.x + (gallery_inner.width.saturating_sub(grid_w)) / 2;
-        let grid = GalleryGrid {
-            x: grid_x,
-            top: grid_top,
-            cell_w,
-            cell_h,
-            bounds: gallery_inner,
-        };
 
         let search_matches: Option<&[usize]> =
             self.app.search.as_ref().map(|s| s.matches.as_slice());
 
-        let favorite_row_len = self.app.favorite_row_len();
-        let normal_visible_rows = self.app.normal_visible_rows(visible_rows);
-        let first_normal_row = if favorite_row_len > 0 { 1 } else { 0 };
-
-        if visible_rows > 0 {
+        if let Some(favorites_inner) = favorites_inner {
+            let favorite_grid =
+                gallery_grid(favorites_inner, self.app.grid_cols, cell_w, cell_h, 1);
             for slot in 0..favorite_row_len {
                 let col = slot as u16;
-                render_gallery_slot(self.app, slot, col, 0, &grid, search_matches, buf);
+                render_gallery_slot(self.app, slot, col, 0, &favorite_grid, search_matches, buf);
             }
         }
+
+        let normal_visible_rows = self.app.normal_visible_rows(visible_rows);
+        let grid = gallery_grid(
+            gallery_inner,
+            self.app.grid_cols,
+            cell_w,
+            cell_h,
+            gallery_visible_rows,
+        );
 
         let start = favorite_row_len + self.app.scroll_row * self.app.grid_cols;
         let end = (start + normal_visible_rows * self.app.grid_cols).min(self.app.images.len());
@@ -117,7 +135,7 @@ impl<'a> Widget for BrowserView<'a> {
         for slot in start..end {
             let vis_idx = slot - start;
             let col = (vis_idx % self.app.grid_cols) as u16;
-            let row = first_normal_row as u16 + (vis_idx / self.app.grid_cols) as u16;
+            let row = (vis_idx / self.app.grid_cols) as u16;
             render_gallery_slot(self.app, slot, col, row, &grid, search_matches, buf);
         }
 
@@ -190,6 +208,26 @@ struct GalleryGrid {
     bounds: Rect,
 }
 
+fn gallery_grid(
+    bounds: Rect,
+    grid_cols: usize,
+    cell_w: u16,
+    cell_h: u16,
+    visible_rows: usize,
+) -> GalleryGrid {
+    let grid_h = (visible_rows as u16) * cell_h;
+    let top = bounds.y + (bounds.height.saturating_sub(grid_h)) / 2;
+    let grid_w = grid_cols as u16 * cell_w;
+    let x = bounds.x + (bounds.width.saturating_sub(grid_w)) / 2;
+    GalleryGrid {
+        x,
+        top,
+        cell_w,
+        cell_h,
+        bounds,
+    }
+}
+
 fn render_gallery_slot(
     app: &App,
     slot: usize,
@@ -229,7 +267,7 @@ fn render_gallery_slot(
         search_query,
         favorite: is_favorite,
         favorite_label: is_favorite.then(|| app.lang.favorite_badge()),
-        slot,
+        cache_key: app.image_cache_key_for_slot(slot),
     };
     render_browser_cell(cell_area, buf, &cell_meta, &app.protocol_cache);
 }
@@ -241,14 +279,14 @@ struct CellMeta<'a> {
     search_query: Option<&'a str>,
     favorite: bool,
     favorite_label: Option<&'a str>,
-    slot: usize,
+    cache_key: Option<ImageCacheKey>,
 }
 
 fn render_browser_cell(
     area: Rect,
     buf: &mut Buffer,
     meta: &CellMeta,
-    cache: &LruCache<usize, Protocol>,
+    cache: &LruCache<ImageCacheKey, Protocol>,
 ) {
     let border_style = if meta.selected {
         // Both selected and search match: bright yellow
@@ -321,7 +359,7 @@ fn render_browser_cell(
     }
 
     // Render chafa thumbnail centered
-    if let Some(proto) = cache.peek(&meta.slot) {
+    if let Some(proto) = meta.cache_key.as_ref().and_then(|key| cache.peek(key)) {
         let proto_size = proto.size();
         let offset_x = thumb_area.width.saturating_sub(proto_size.width) / 2;
         let offset_y = thumb_area.height.saturating_sub(proto_size.height) / 2;
@@ -448,11 +486,10 @@ pub fn populate_protocol_cache(
     app.update_thumbnail_interest(thumb_w, thumb_h, request_order.iter().copied());
 
     for slot in request_order {
-        if app.protocol_cache.get(&slot).is_some()
-            || app
-                .requested
-                .contains(&(app.directory_generation, slot, size.clone()))
-        {
+        let Some(key) = app.image_cache_key_for_slot(slot) else {
+            continue;
+        };
+        if app.protocol_cache.get(&key).is_some() || app.requested.contains(&(key, size.clone())) {
             continue;
         }
         app.request_load(slot, size.clone());
@@ -521,6 +558,12 @@ mod tests {
             .collect::<String>()
     }
 
+    fn row_text(buf: &Buffer, area: Rect, y: u16) -> String {
+        (area.x..area.x + area.width)
+            .map(|x| buf.cell((x, y)).unwrap().symbol())
+            .collect()
+    }
+
     fn render_test_app() -> (TempDir, App) {
         let dir = tempdir().unwrap();
         let photos = dir.path().join("photos");
@@ -578,6 +621,7 @@ mod tests {
     #[test]
     fn thumbnail_request_order_includes_pinned_row_and_visible_normal_rows() {
         let dir = tempdir().unwrap();
+        fs::write(dir.path().join("img2.png"), b"favorite").unwrap();
         let images = (0..5)
             .map(|idx| ImageEntry {
                 path: dir.path().join(format!("img{idx}.png")),
@@ -627,6 +671,8 @@ mod tests {
         assert!(text.contains("Context"));
         assert!(text.contains("Gallery"));
         assert!(text.contains("Info"));
+        let areas = three_panel_areas(area);
+        assert!(!row_text(&buf, areas.gallery, areas.gallery.y).contains("Favorites"));
 
         let prompt_text_row = area.height - 3;
         let prompt_row: String = (0..area.width)
@@ -652,6 +698,65 @@ mod tests {
         .render(area, &mut buf);
 
         assert!(buffer_text(&buf).contains("Favorite"));
+    }
+
+    #[test]
+    fn browser_render_shows_favorites_panel_above_gallery() {
+        let dir = tempdir().unwrap();
+        let favorite_path = dir.path().join("favorite.png");
+        let normal_path = dir.path().join("normal.png");
+        fs::write(&favorite_path, b"favorite").unwrap();
+        fs::write(&normal_path, b"normal").unwrap();
+        let images = vec![
+            ImageEntry {
+                path: favorite_path.clone(),
+                filename: "favorite.png".to_string(),
+                file_size: 8,
+                modified_at: None,
+            },
+            ImageEntry {
+                path: normal_path,
+                filename: "normal.png".to_string(),
+                file_size: 6,
+                modified_at: None,
+            },
+        ];
+        let (tx, _rx) = std::sync::mpsc::channel::<LoadRequest>();
+        let (_tx2, rx2) = std::sync::mpsc::channel::<LoadResult>();
+        let mut app = App::new(
+            AppStart {
+                images,
+                image_dir: dir.path().to_path_buf(),
+                state: AppState::Browser,
+                selected: 0,
+            },
+            tx,
+            rx2,
+            Lang::En,
+            Picker::halfblocks(),
+        );
+        app.set_grid_layout(2, 3);
+        app.set_favorite_store_path_for_tests(dir.path().join("favorites.tsv"));
+        app.add_favorite_for_tests(&favorite_path, 10);
+
+        let area = Rect::new(0, 0, 100, 24);
+        let cell_w: u16 = 20;
+        let cell_h: u16 = 6;
+        let areas = three_panel_areas(area);
+        let favorites_height = cell_h.saturating_add(2).min(areas.gallery.height);
+        let mut buf = Buffer::empty(area);
+
+        BrowserView {
+            app: &mut app,
+            cell_w,
+            cell_h,
+        }
+        .render(area, &mut buf);
+
+        assert!(row_text(&buf, areas.gallery, areas.gallery.y).contains("Favorites"));
+        assert!(
+            row_text(&buf, areas.gallery, areas.gallery.y + favorites_height).contains("Gallery")
+        );
     }
 
     #[test]
