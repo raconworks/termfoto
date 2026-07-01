@@ -1,10 +1,8 @@
 use std::collections::HashSet;
-use std::fs::{self, File};
-use std::io::{self, BufReader};
+use std::fs;
+use std::io;
 use std::num::NonZeroUsize;
 use std::path::{Path, PathBuf};
-#[cfg(test)]
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{
     mpsc::{Receiver, Sender},
     Arc, Mutex,
@@ -13,7 +11,6 @@ use std::time::{Duration, Instant, SystemTime};
 
 use crossterm::event::{KeyCode, KeyModifiers};
 use fast_image_resize as fir;
-use image::AnimationDecoder;
 use lru::LruCache;
 use ratatui::layout::Size;
 use ratatui_image::{
