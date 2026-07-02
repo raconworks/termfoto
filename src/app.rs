@@ -54,6 +54,8 @@ use render::{
 use fullscreen::animation_cache_key;
 #[cfg(test)]
 use gallery::{browser_context_parent, browser_directory_context_entries};
+#[cfg(all(feature = "bench-internals", not(test)))]
+use loader::process_thumbnail_request;
 #[cfg(test)]
 use loader::{
     animation_content_from_frames, frame_delay, process_load_request_with_control,
@@ -296,6 +298,89 @@ impl App {
         self.favorites.add_at(path, added_at_ms).unwrap();
         let selected_path = self.current_selected_path();
         self.rebuild_active_gallery(selected_path);
+    }
+}
+
+#[cfg(feature = "bench-internals")]
+pub mod bench {
+    use super::*;
+
+    pub fn process_thumbnail_request_for_bench(
+        picker: &Picker,
+        path: &Path,
+        w: u16,
+        h: u16,
+    ) -> bool {
+        let entry = image_entry_from_path(path).unwrap_or_else(|| ImageEntry {
+            path: path.to_path_buf(),
+            filename: path
+                .file_name()
+                .unwrap_or_default()
+                .to_string_lossy()
+                .into_owned(),
+            file_size: 0,
+            modified_at: None,
+        });
+        let key = ImageCacheKey::from_entry(&entry);
+
+        process_thumbnail_request(picker, path, key, 0, w, h).is_some()
+    }
+
+    pub struct FullscreenRenderBench {
+        picker: Picker,
+        resizer: fir::Resizer,
+        image_key: ImageCacheKey,
+    }
+
+    impl FullscreenRenderBench {
+        pub fn new(picker: Picker) -> Self {
+            let entry = ImageEntry {
+                path: PathBuf::from("bench-fullscreen.png"),
+                filename: "bench-fullscreen.png".to_string(),
+                file_size: 0,
+                modified_at: None,
+            };
+
+            Self {
+                picker,
+                resizer: fir::Resizer::new(),
+                image_key: ImageCacheKey::from_entry(&entry),
+            }
+        }
+
+        pub fn render_final(
+            &mut self,
+            image: Arc<image::RgbaImage>,
+            viewport: Size,
+            zoom: f32,
+        ) -> bool {
+            let font_size = self.picker.font_size();
+            let key = render::RenderKey {
+                image_key: self.image_key.clone(),
+                viewport_w: viewport.width,
+                viewport_h: viewport.height,
+                font_w: font_size.width,
+                font_h: font_size.height,
+                zoom_percent: render::zoom_percent(zoom),
+                pan_x: 0,
+                pan_y: 0,
+                quality: render::RenderQuality::Final,
+            };
+            let request = render::RenderRequest {
+                image_key: self.image_key.clone(),
+                image,
+                viewport,
+                font_size,
+                zoom,
+                pan_x: 0,
+                pan_y: 0,
+                key,
+                generation: 0,
+            };
+
+            render::render_zoom_protocol_for_bench(&self.picker, &mut self.resizer, &request)
+                .is_some()
+        }
     }
 }
 

@@ -77,12 +77,11 @@ impl SearchState {
     }
 
     fn update_matches(&mut self, images: &[ImageEntry]) {
-        let query_lower = self.query.to_lowercase();
         let mut scored: Vec<(usize, i32)> = images
             .iter()
             .enumerate()
             .filter_map(|(idx, entry)| {
-                let score = fuzzy_score(&entry.filename, &query_lower)?;
+                let score = fuzzy_score(&entry.filename, &self.query)?;
                 Some((idx, score))
             })
             .collect();
@@ -95,13 +94,18 @@ impl SearchState {
 /// Returns Some(score) if matched, None otherwise.
 /// Higher score = better match. Consecutive chars + early position = bonus.
 fn fuzzy_score(text: &str, query: &str) -> Option<i32> {
-    let text_lower = text.to_lowercase();
-    let text_chars: Vec<char> = text_lower.chars().collect();
-    let query_chars: Vec<char> = query.chars().collect();
-
-    if query_chars.is_empty() {
+    if query.is_empty() {
         return None;
     }
+
+    if text.is_ascii() && query.is_ascii() {
+        return fuzzy_score_ascii(text.as_bytes(), query.as_bytes());
+    }
+
+    let text_lower = text.to_lowercase();
+    let query_lower = query.to_lowercase();
+    let text_chars: Vec<char> = text_lower.chars().collect();
+    let query_chars: Vec<char> = query_lower.chars().collect();
 
     let mut score: i32 = 0;
     let mut qi = 0;
@@ -133,6 +137,47 @@ fn fuzzy_score(text: &str, query: &str) -> Option<i32> {
     } else {
         None
     }
+}
+
+fn fuzzy_score_ascii(text: &[u8], query: &[u8]) -> Option<i32> {
+    let mut score: i32 = 0;
+    let mut qi = 0;
+    let mut prev_pos: Option<usize> = None;
+
+    for (ti, tc) in text.iter().enumerate() {
+        if qi >= query.len() {
+            break;
+        }
+        if tc.eq_ignore_ascii_case(&query[qi]) {
+            score += 100 - (ti as i32).min(99);
+
+            if let Some(prev) = prev_pos {
+                if ti == prev + 1 {
+                    score += 50;
+                } else {
+                    let gap = (ti - prev) as i32;
+                    score -= gap.min(10);
+                }
+            }
+
+            prev_pos = Some(ti);
+            qi += 1;
+        }
+    }
+
+    if qi == query.len() {
+        Some(score)
+    } else {
+        None
+    }
+}
+
+#[cfg(feature = "bench-internals")]
+pub fn search_matches_for_bench(query: &str, images: &[ImageEntry]) -> usize {
+    let mut state = SearchState::new(0, '/');
+    state.query.push_str(query);
+    state.update_matches(images);
+    state.matches.len()
 }
 
 // ---- SearchBar widget ----
@@ -280,6 +325,15 @@ mod tests {
         let action = s.handle_key(KeyCode::Char('p'), KeyModifiers::NONE, &images);
         assert!(matches!(action, SearchAction::JumpTo(_)));
         assert!(!s.matches.is_empty());
+    }
+
+    #[test]
+    fn test_fuzzy_match_unicode_case_insensitive() {
+        let images = make_images(&["风景.PNG", "城市.jpg"]);
+        let mut s = SearchState::new(0, '/');
+        let action = s.handle_key(KeyCode::Char('风'), KeyModifiers::NONE, &images);
+        assert!(matches!(action, SearchAction::JumpTo(_)));
+        assert_eq!(s.matches, vec![0]);
     }
 
     #[test]

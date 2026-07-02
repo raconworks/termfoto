@@ -81,9 +81,18 @@ fn process_load_request(
         ..
     } = req;
     match size {
-        LoadSize::Thumbnail { w, h } => {
-            process_thumbnail_request(picker, path.as_path(), key, generation, w, h)
-        }
+        LoadSize::Thumbnail { w, h } => process_thumbnail_request_with_control(
+            picker,
+            load_control,
+            LoadRequest {
+                key,
+                path,
+                size: LoadSize::Thumbnail { w, h },
+                generation,
+            },
+            w,
+            h,
+        ),
         LoadSize::Original { w, h, kind } => process_original_request(
             picker,
             load_control,
@@ -100,6 +109,35 @@ fn process_load_request(
     }
 }
 
+fn process_thumbnail_request_with_control(
+    picker: &Picker,
+    load_control: &LoadControl,
+    req: LoadRequest,
+    w: u16,
+    h: u16,
+) -> Option<LoadResult> {
+    if !load_control.allows(&req) {
+        return Some(skipped_load_result(req));
+    }
+
+    let img = image::open(&req.path).ok()?;
+    if !load_control.allows(&req) {
+        return Some(skipped_load_result(req));
+    }
+
+    let font_size = picker.font_size();
+    let pixel_w = w as u32 * font_size.width as u32 * 2;
+    let pixel_h = h as u32 * font_size.height as u32 * 2;
+    let dims = Some((img.width(), img.height()));
+    let thumb = img.thumbnail(pixel_w, pixel_h);
+    if !load_control.allows(&req) {
+        return Some(skipped_load_result(req));
+    }
+
+    thumbnail_result_from_image(picker, req, w, h, dims, thumb)
+}
+
+#[cfg(any(test, feature = "bench-internals"))]
 pub(in crate::app) fn process_thumbnail_request(
     picker: &Picker,
     path: &Path,
@@ -109,16 +147,39 @@ pub(in crate::app) fn process_thumbnail_request(
     h: u16,
 ) -> Option<LoadResult> {
     let img = image::open(path).ok()?;
+    let req = LoadRequest {
+        key,
+        path: path.to_path_buf(),
+        size: LoadSize::Thumbnail { w, h },
+        generation,
+    };
     let font_size = picker.font_size();
     let pixel_w = w as u32 * font_size.width as u32 * 2;
     let pixel_h = h as u32 * font_size.height as u32 * 2;
     let dims = Some((img.width(), img.height()));
     let thumb = img.thumbnail(pixel_w, pixel_h);
+    thumbnail_result_from_image(picker, req, w, h, dims, thumb)
+}
+
+fn thumbnail_result_from_image(
+    picker: &Picker,
+    req: LoadRequest,
+    w: u16,
+    h: u16,
+    dims: Option<(u32, u32)>,
+    thumb: image::DynamicImage,
+) -> Option<LoadResult> {
     let protocol = make_protocol(picker, thumb, Size::new(w, h), ProtocolFilterType::Nearest)?;
+    let LoadRequest {
+        key,
+        size,
+        generation,
+        ..
+    } = req;
 
     Some(LoadResult {
         key,
-        size: LoadSize::Thumbnail { w, h },
+        size,
         generation,
         content: LoadContent::Thumbnail(protocol),
         dims,

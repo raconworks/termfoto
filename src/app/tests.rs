@@ -8,7 +8,7 @@ use std::time::{Duration, Instant, UNIX_EPOCH};
 use tempfile::tempdir;
 
 mod helpers;
-pub(super) use helpers::*;
+use helpers::*;
 
 mod files;
 mod fullscreen;

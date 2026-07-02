@@ -1,9 +1,3 @@
-mod app;
-mod favorites;
-mod lang;
-mod scanner;
-mod ui;
-
 /// RAII guard that restores terminal state on drop.
 struct TermGuard {
     _stdout: std::io::Stdout,
@@ -37,12 +31,12 @@ use crossterm::{
 };
 use ratatui::{backend::CrosstermBackend, Terminal};
 use ratatui_image::picker::Picker;
-
-use app::{spawn_image_loader, App, AppStart, AppState, LoadControl, MIN_CELL};
-use lang::Lang;
-use scanner::scan_directory;
-use ui::browser::populate_protocol_cache;
-use ui::layout::gallery_inner_size;
+use termfoto::{
+    app::{spawn_image_loader, App, AppStart, AppState, LoadControl, MIN_CELL},
+    lang::Lang,
+    scanner::{self, scan_directory},
+    ui::{self, browser::populate_protocol_cache, layout::gallery_inner_size},
+};
 
 fn main() -> Result<()> {
     let arg1 = std::env::args().nth(1);

@@ -230,6 +230,15 @@ fn render_zoom_protocol(
         .ok()
 }
 
+#[cfg(feature = "bench-internals")]
+pub(in crate::app) fn render_zoom_protocol_for_bench(
+    picker: &Picker,
+    resizer: &mut fir::Resizer,
+    request: &RenderRequest,
+) -> Option<Protocol> {
+    render_zoom_protocol(picker, resizer, request)
+}
+
 fn resize_with_fast_image_resize(
     resizer: &mut fir::Resizer,
     image: &image::RgbaImage,

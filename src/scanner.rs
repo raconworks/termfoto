@@ -1,3 +1,4 @@
+use std::fs::{self, DirEntry, Metadata};
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
@@ -16,8 +17,11 @@ const SUPPORTED_EXTENSIONS: &[&str] = &[
 pub fn is_supported_image(path: &Path) -> bool {
     path.extension()
         .and_then(|ext| ext.to_str())
-        .map(|ext| SUPPORTED_EXTENSIONS.contains(&ext.to_lowercase().as_str()))
-        .unwrap_or(false)
+        .is_some_and(|ext| {
+            SUPPORTED_EXTENSIONS
+                .iter()
+                .any(|supported| ext.eq_ignore_ascii_case(supported))
+        })
 }
 
 pub fn image_entry_from_path(path: &Path) -> Option<ImageEntry> {
@@ -25,27 +29,53 @@ pub fn image_entry_from_path(path: &Path) -> Option<ImageEntry> {
         return None;
     }
 
+    let metadata = std::fs::metadata(path).ok();
+    Some(image_entry(path.to_path_buf(), metadata.as_ref()))
+}
+
+fn image_entry(path: PathBuf, metadata: Option<&Metadata>) -> ImageEntry {
     let filename = path
         .file_name()
         .unwrap_or_default()
         .to_string_lossy()
         .into_owned();
-    let metadata = std::fs::metadata(path).ok();
-    let file_size = metadata.as_ref().map(|m| m.len()).unwrap_or(0);
+    let file_size = metadata.map(|m| m.len()).unwrap_or(0);
     let modified_at = metadata.and_then(|m| m.modified().ok());
-    Some(ImageEntry {
-        path: path.to_path_buf(),
+    ImageEntry {
+        path,
         filename,
         file_size,
         modified_at,
-    })
+    }
+}
+
+fn image_entry_from_dir_entry(entry: DirEntry) -> Option<ImageEntry> {
+    let file_type = entry.file_type().ok()?;
+    if !file_type.is_file() && !file_type.is_symlink() {
+        return None;
+    }
+
+    let path = entry.path();
+    if !is_supported_image(&path) {
+        return None;
+    }
+
+    let metadata = if file_type.is_symlink() {
+        fs::metadata(&path).ok()?
+    } else {
+        entry.metadata().ok()?
+    };
+    if !metadata.is_file() {
+        return None;
+    }
+
+    Some(image_entry(path, Some(&metadata)))
 }
 
 pub fn scan_directory(dir: &Path) -> anyhow::Result<Vec<ImageEntry>> {
     let mut entries: Vec<ImageEntry> = std::fs::read_dir(dir)?
         .filter_map(|res| res.ok())
-        .map(|e| e.path())
-        .filter_map(|path| image_entry_from_path(&path))
+        .filter_map(image_entry_from_dir_entry)
         .collect();
 
     entries.sort_by(|a, b| a.filename.cmp(&b.filename));

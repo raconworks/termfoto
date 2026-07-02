@@ -17,11 +17,13 @@ pub struct FavoriteStore {
 }
 
 impl FavoriteStore {
+    #[cfg(not(test))]
     pub fn load_default() -> Self {
         let path = Self::default_path();
         Self::load(path.clone()).unwrap_or_else(|_| Self::empty_at(path))
     }
 
+    #[cfg(not(test))]
     pub fn default_path() -> PathBuf {
         if let Some(config_home) = std::env::var_os("XDG_CONFIG_HOME") {
             return PathBuf::from(config_home)

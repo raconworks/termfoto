@@ -10,12 +10,22 @@ categories = ["command-line-utilities", "multimedia::images"]
 
 [features]
 default = []
+bench-internals = []
 chafa = ["ratatui-image/chafa-dyn", "ratatui-image/image-defaults"]
 chafa-static = ["ratatui-image/chafa-static", "ratatui-image/image-defaults"]
+
+[lib]
+name = "termfoto"
+path = "src/lib.rs"
 
 [[bin]]
 name = "termfoto"
 path = "src/main.rs"
+
+[[bench]]
+name = "perf"
+harness = false
+required-features = ["bench-internals"]
 
 [dependencies]
 ratatui = { version = "0.30", default-features = false, features = ["crossterm"] }
@@ -34,4 +44,5 @@ strip = true
 panic = "abort"
 
 [dev-dependencies]
+criterion = "0.7"
 tempfile = "3"
