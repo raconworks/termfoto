@@ -184,10 +184,15 @@ pub fn search_matches_for_bench(query: &str, images: &[ImageEntry]) -> usize {
 
 use ratatui::{
     buffer::Buffer,
-    layout::{Alignment, Rect},
-    style::{Color, Style},
+    layout::Rect,
+    style::{Color, Modifier},
     text::{Line, Span},
-    widgets::{Paragraph, Widget},
+    widgets::Widget,
+};
+
+use crate::ui::{
+    prompt_input_style, prompt_mode_label, prompt_text_span, render_prompt_rich_lines,
+    PromptLineKind, PromptMode,
 };
 
 pub struct SearchBar<'a> {
@@ -210,34 +215,41 @@ impl<'a> Widget for SearchBar<'a> {
             0
         };
 
-        let cursor = "█";
-        let display_query = format!("{}{}{}", prompt, query, cursor);
+        let display_query = format!("[{}{}█]", prompt, query);
 
-        let query_style = if total_matches == 0 && !query.is_empty() {
-            Style::default().fg(Color::Red).bg(Color::DarkGray)
+        let input_style = if total_matches == 0 && !query.is_empty() {
+            prompt_input_style()
+                .fg(Color::Red)
+                .add_modifier(Modifier::BOLD)
         } else {
-            Style::default().fg(Color::White).bg(Color::DarkGray)
+            prompt_input_style()
         };
-
-        let hint_style = Style::default().fg(Color::Gray).bg(Color::DarkGray);
 
         let prompt_lines = self
             .lang
             .search_prompt_lines(current, total_matches, !query.is_empty());
         let mut lines = vec![Line::from(vec![
-            Span::styled(" Search   ", hint_style),
-            Span::styled(display_query, query_style),
+            prompt_mode_label(PromptMode::Search),
+            Span::styled(format!("  {}", display_query), input_style),
         ])];
         lines.extend(
             prompt_lines
                 .into_iter()
                 .skip(1)
-                .map(|line| Line::from(Span::styled(line, hint_style))),
+                .enumerate()
+                .map(|(idx, line)| {
+                    let kind = if idx == 0 && total_matches == 0 && !query.is_empty() {
+                        PromptLineKind::Error
+                    } else if idx == 0 {
+                        PromptLineKind::Normal
+                    } else {
+                        PromptLineKind::Hint
+                    };
+                    Line::from(prompt_text_span(line, kind))
+                }),
         );
 
-        Paragraph::new(lines)
-            .alignment(Alignment::Left)
-            .render(area, buf);
+        render_prompt_rich_lines(area, &lines, buf);
     }
 }
 
@@ -273,13 +285,7 @@ mod tests {
         s.trim_end().to_string()
     }
 
-    #[test]
-    fn test_searchbar_with_no_query() {
-        let state = SearchState::new(0, '/');
-        let bar = SearchBar {
-            state: &state,
-            lang: Lang::Zh,
-        };
+    fn render_search_bar(state: &SearchState, lang: Lang) -> (Buffer, Rect) {
         let area = Rect {
             x: 0,
             y: 0,
@@ -287,16 +293,47 @@ mod tests {
             height: 3,
         };
         let mut buf = Buffer::empty(area);
-        bar.render(area, &mut buf);
+        SearchBar { state, lang }.render(area, &mut buf);
+        (buf, area)
+    }
+
+    #[test]
+    fn test_searchbar_with_no_query() {
+        let state = SearchState::new(0, '/');
+        let (buf, area) = render_search_bar(&state, Lang::Zh);
         let content = cell_text(&buf, area);
+        assert!(
+            content.contains("SEARCH"),
+            "expected SEARCH label, got: {content:?}"
+        );
         assert!(
             content.contains('/'),
             "expected search trigger '/', got: {content:?}"
         );
         assert!(
+            content.contains('█'),
+            "expected cursor block, got: {content:?}"
+        );
+        assert!(
             content.contains("Esc"),
             "expected Esc hint, got: {content:?}"
         );
+    }
+
+    #[test]
+    fn searchbar_marks_unmatched_query_as_error() {
+        let mut state = SearchState::new(0, '/');
+        state.query = "z".to_string();
+        let (buf, area) = render_search_bar(&state, Lang::En);
+        let z_cell = (area.x..area.x + area.width)
+            .find_map(|x| {
+                let cell = buf.cell((x, area.y)).unwrap();
+                (cell.symbol() == "z").then_some(cell)
+            })
+            .expect("query cell should be rendered");
+
+        assert_eq!(z_cell.fg, Color::Red);
+        assert_eq!(z_cell.bg, Color::White);
     }
 
     #[test]

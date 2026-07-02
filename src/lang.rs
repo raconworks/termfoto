@@ -1,5 +1,5 @@
 /// Language for UI text. Detected from $LANG at startup, toggled by L key.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Lang {
     Zh,
     En,

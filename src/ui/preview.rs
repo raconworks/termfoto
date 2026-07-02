@@ -1,6 +1,9 @@
 use crate::app::App;
 use crate::ui::layout::three_panel_areas;
-use crate::ui::{render_directory_context, render_info_panel, render_panel, render_prompt_lines};
+use crate::ui::{
+    render_default_prompt, render_delete_prompt, render_directory_context, render_info_panel,
+    render_panel, render_rename_prompt, DefaultPrompt, DefaultPromptKind,
+};
 use ratatui::{buffer::Buffer, layout::Rect, widgets::Widget};
 use ratatui_image::Image;
 
@@ -60,30 +63,25 @@ impl<'a> Widget for PreviewView<'a> {
         );
 
         // --- Status bar ---
-        if let Some(lines) = self.app.delete_prompt_lines() {
-            render_prompt_lines(areas.prompt, &lines, buf);
-        } else if let Some(lines) = self.app.rename_prompt_lines() {
-            render_prompt_lines(areas.prompt, &lines, buf);
+        if let Some(prompt) = self.app.delete_prompt() {
+            render_delete_prompt(areas.prompt, &prompt, buf);
+        } else if let Some(prompt) = self.app.rename_prompt() {
+            render_rename_prompt(areas.prompt, &prompt, buf);
         } else if let Some(entry) = self.app.images.get(self.app.selected) {
-            let status = if self.app.fullscreen_pending {
-                self.app.lang.loading_text().to_string()
-            } else if (self.app.zoom - 1.0).abs() > f32::EPSILON {
-                format!(" [{:.0}%]", self.app.zoom * 100.0)
-            } else {
-                String::new()
+            let prompt = DefaultPrompt {
+                lang: self.app.lang,
+                kind: DefaultPromptKind::View {
+                    name: entry.filename.clone(),
+                    selected: self.app.selected + 1,
+                    total: self.app.images.len(),
+                    loading: self.app.fullscreen_pending,
+                    zoom_percent: (self.app.zoom * 100.0).round().clamp(1.0, u16::MAX as f32)
+                        as u16,
+                    favorites_view: self.app.is_favorites_view(),
+                },
+                status_message: self.app.browser_status_message(),
             };
-            let lines = self.app.lang.fullscreen_prompt_lines(
-                &entry.filename,
-                self.app.selected + 1,
-                self.app.images.len(),
-                &status,
-                self.app.is_favorites_view(),
-            );
-            let mut lines = lines;
-            if let Some(message) = self.app.browser_status_message() {
-                lines[0] = self.app.lang.status_prompt_line(&message);
-            }
-            render_prompt_lines(areas.prompt, &lines, buf);
+            render_default_prompt(areas.prompt, &prompt, buf);
         }
     }
 }
@@ -166,5 +164,8 @@ mod tests {
         assert!(text.contains("Gallery"));
         assert!(text.contains("Info"));
         assert!(text.contains("> photos/"));
+        assert!(text.contains("VIEW"));
+        assert!(text.contains("sample.png"));
+        assert!(text.contains("Loading"));
     }
 }

@@ -136,6 +136,7 @@ fn browser_render_includes_three_panel_titles_and_prompt_row() {
     let prompt_row: String = (0..area.width)
         .map(|x| buf.cell((x, prompt_text_row)).unwrap().symbol())
         .collect();
+    assert!(prompt_row.contains("GALLERY"));
     assert!(prompt_row.contains("sample.png"));
 }
 
@@ -300,7 +301,8 @@ fn browser_render_with_no_images_leaves_gallery_info_and_filename_empty() {
 
     let text = buffer_text(&buf);
     assert!(!text.contains("old.png"));
-    assert!(text.contains("File      [0/0]"));
+    assert!(text.contains("GALLERY"));
+    assert!(text.contains("[0/0]"));
     assert!(text.contains("Sort Name"));
     assert!(text.contains("s Sort"));
 }
@@ -320,7 +322,7 @@ fn browser_prompt_changes_for_context_and_search_modes() {
     .render(area, &mut buf);
 
     let text = buffer_text(&buf);
-    assert!(text.contains("Folder"));
+    assert!(text.contains("FOLDER"));
     assert!(text.contains("Open Folder"));
     assert!(text.contains("Sort Name"));
     assert!(text.contains("s Sort"));

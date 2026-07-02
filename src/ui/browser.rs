@@ -2,8 +2,8 @@ use crate::app::{App, BrowserFocus};
 use crate::ui::layout::three_panel_areas;
 use crate::ui::search::SearchBar;
 use crate::ui::{
-    render_directory_context, render_info_panel, render_panel, render_prompt_base,
-    render_prompt_lines,
+    render_default_prompt, render_delete_prompt, render_directory_context, render_info_panel,
+    render_panel, render_rename_prompt, DefaultPrompt, DefaultPromptKind,
 };
 use ratatui::{buffer::Buffer, layout::Rect, widgets::Widget};
 
@@ -136,12 +136,11 @@ impl<'a> Widget for BrowserView<'a> {
             grid::render_gallery_slot(self.app, slot, col, row, &grid, search_matches, buf);
         }
 
-        if let Some(lines) = self.app.delete_prompt_lines() {
-            render_prompt_lines(areas.prompt, &lines, buf);
-        } else if let Some(lines) = self.app.rename_prompt_lines() {
-            render_prompt_lines(areas.prompt, &lines, buf);
+        if let Some(prompt) = self.app.delete_prompt() {
+            render_delete_prompt(areas.prompt, &prompt, buf);
+        } else if let Some(prompt) = self.app.rename_prompt() {
+            render_rename_prompt(areas.prompt, &prompt, buf);
         } else if let Some(ref search) = self.app.search {
-            render_prompt_base(areas.prompt, buf);
             SearchBar {
                 state: search,
                 lang: self.app.lang,
@@ -152,49 +151,51 @@ impl<'a> Widget for BrowserView<'a> {
                 .app
                 .images
                 .get(self.app.selected)
-                .map(|e| e.filename.as_str())
-                .unwrap_or("");
-            let mut lines = if self.app.is_favorites_view() {
-                self.app.lang.favorites_prompt_lines(
-                    selected_name,
-                    self.app
-                        .selected
-                        .saturating_add(1)
-                        .min(self.app.images.len()),
-                    self.app.images.len(),
-                )
+                .map(|e| e.filename.clone())
+                .unwrap_or_default();
+            let selected = self
+                .app
+                .selected
+                .saturating_add(1)
+                .min(self.app.images.len());
+            let kind = if self.app.is_favorites_view() {
+                DefaultPromptKind::Favorites {
+                    name: selected_name,
+                    selected,
+                    total: self.app.images.len(),
+                }
             } else {
                 match self.app.browser_focus {
-                    BrowserFocus::Gallery => self.app.lang.browser_prompt_lines(
-                        selected_name,
-                        self.app
-                            .selected
-                            .saturating_add(1)
-                            .min(self.app.images.len()),
-                        self.app.images.len(),
-                        self.app.sort_label(),
-                    ),
+                    BrowserFocus::Gallery => DefaultPromptKind::Gallery {
+                        name: selected_name,
+                        selected,
+                        total: self.app.images.len(),
+                        sort_label: self.app.sort_label().to_string(),
+                    },
                     BrowserFocus::Context => {
                         let context_name = context_entries
                             .get(self.app.context_selected)
-                            .map(|entry| entry.name.as_str())
-                            .unwrap_or("");
-                        self.app.lang.context_prompt_lines(
-                            context_name,
-                            self.app
+                            .map(|entry| entry.name.clone())
+                            .unwrap_or_default();
+                        DefaultPromptKind::Folder {
+                            name: context_name,
+                            selected: self
+                                .app
                                 .context_selected
                                 .saturating_add(1)
                                 .min(context_entries.len()),
-                            context_entries.len(),
-                            self.app.sort_label(),
-                        )
+                            total: context_entries.len(),
+                            sort_label: self.app.sort_label().to_string(),
+                        }
                     }
                 }
             };
-            if let Some(message) = self.app.browser_status_message() {
-                lines[0] = self.app.lang.status_prompt_line(&message);
-            }
-            render_prompt_lines(areas.prompt, &lines, buf);
+            let prompt = DefaultPrompt {
+                lang: self.app.lang,
+                kind,
+                status_message: self.app.browser_status_message(),
+            };
+            render_default_prompt(areas.prompt, &prompt, buf);
         }
     }
 }

@@ -90,10 +90,29 @@ impl App {
         }
     }
 
+    pub fn rename_prompt(&self) -> Option<crate::ui::RenamePrompt> {
+        let rename = self.rename.as_ref()?;
+        Some(crate::ui::RenamePrompt {
+            lang: self.lang,
+            original_name: rename.original_filename.clone(),
+            input: rename.input.clone(),
+            message: rename.message.clone(),
+            pending_overwrite: rename.pending_overwrite,
+            target_name: rename.pending_overwrite.then(|| rename.target_filename()),
+        })
+    }
+
     pub fn delete_prompt_lines(&self) -> Option<Vec<String>> {
         self.delete
             .as_ref()
             .map(|delete| self.lang.delete_prompt_lines(&delete.filename))
+    }
+
+    pub fn delete_prompt(&self) -> Option<crate::ui::DeletePrompt> {
+        self.delete.as_ref().map(|delete| crate::ui::DeletePrompt {
+            lang: self.lang,
+            filename: delete.filename.clone(),
+        })
     }
 
     pub(super) fn set_status_message(&mut self, message: String) {
