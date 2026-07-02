@@ -127,8 +127,9 @@ impl App {
 
         match code {
             KeyCode::Char('y') | KeyCode::Char('Y') | KeyCode::Enter => {
+                let favorite_path = FavoriteStore::normalize_path(&delete.path);
                 match fs::remove_file(&delete.path) {
-                    Ok(()) => self.finish_delete_success(delete),
+                    Ok(()) => self.finish_delete_success(delete, favorite_path),
                     Err(err) => {
                         self.set_status_message(self.lang.delete_failed(&err.to_string()));
                     }
@@ -231,17 +232,17 @@ impl App {
         }
     }
 
-    pub(super) fn finish_delete_success(&mut self, delete: DeleteState) {
+    pub(super) fn finish_delete_success(&mut self, delete: DeleteState, favorite_path: PathBuf) {
         let DeleteState {
-            path,
+            path: _,
             filename,
             cache_key,
             ..
         } = delete;
         let selected_path = self.selection_after_current_delete();
-        let favorite_remove_error = if self.favorites.is_favorite(&path) {
+        let favorite_remove_error = if self.favorites.is_favorite(&favorite_path) {
             self.favorites
-                .remove(&path)
+                .remove(&favorite_path)
                 .err()
                 .map(|err| err.to_string())
         } else {

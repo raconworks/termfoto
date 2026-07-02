@@ -116,6 +116,22 @@ fn delete_favorite_removes_favorite_record_and_empty_favorites_status() {
 }
 
 #[test]
+fn delete_favorite_from_noncanonical_directory_removes_favorite_record() {
+    let dir = tempdir().unwrap();
+    write_png(&dir.path().join("a.png"));
+    let noncanonical_dir = dir.path().join(".");
+    let (mut app, _rx) = make_app_for_dir(&noncanonical_dir, 0, AppState::Browser);
+    isolate_favorites(&mut app, dir.path());
+    app.add_favorite_for_tests(&dir.path().join("a.png"), 10);
+
+    app.handle_key(KeyCode::Char('d'), KeyModifiers::NONE);
+    app.handle_key(KeyCode::Char('y'), KeyModifiers::NONE);
+
+    assert!(!dir.path().join("a.png").exists());
+    assert!(app.favorites.entries().is_empty());
+}
+
+#[test]
 fn delete_failure_keeps_gallery_and_selection() {
     let dir = tempdir().unwrap();
     write_png(&dir.path().join("a.png"));
